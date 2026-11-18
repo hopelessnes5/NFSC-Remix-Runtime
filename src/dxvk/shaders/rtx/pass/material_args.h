@@ -46,6 +46,10 @@ struct OpaqueMaterialArgs {
   float legacySpecularLevel = 1.f;
   float legacyFresnelGrazing = 1.f;
   // NV-DXVK end
+  float nfscClearCoatWeight = 1.f;
+  float nfscClearCoatRoughness = 0.02f;
+  float nfscFlakeStrength = 0.f;
+  float nfscFlakeScale = 320.f;
 };
 
 struct TranslucentMaterialArgs {
@@ -77,6 +81,15 @@ struct OpaqueMaterialOptions {
   friend class ImGUI;
 
   // Modifiers
+
+  RTX_OPTION("rtx.opaqueMaterial", float, nfscClearCoatWeight, 1.0f,
+             "Strength of the dielectric clear coat on glossy Need for Speed Carbon paint. Zero disables the coat.");
+  RTX_OPTION("rtx.opaqueMaterial", float, nfscClearCoatRoughness, 0.02f,
+             "Perceptual roughness of the Carbon clear coat, independent of the base paint.");
+  RTX_OPTION("rtx.opaqueMaterial", float, nfscFlakeStrength, 0.0f,
+             "Strength of the experimental Carbon paint flake approximation; zero disables it.");
+  RTX_OPTION("rtx.opaqueMaterial", float, nfscFlakeScale, 320.0f,
+             "Texture-coordinate frequency of the experimental Carbon paint flake approximation.");
 
   RTX_OPTION("rtx.opaqueMaterial", float, albedoScale, 1.0f, "A scale factor to apply to all albedo values in the opaque material. Should only be used for debugging or development.");
   RTX_OPTION("rtx.opaqueMaterial", float, albedoBias, 0.0f, "A bias factor to add to all albedo values in the opaque material. Should only be used for debugging or development.");
@@ -111,6 +124,10 @@ struct OpaqueMaterialOptions {
 
 public:
   static void fillShaderParams(OpaqueMaterialArgs& args) {
+    args.nfscClearCoatWeight = std::clamp(nfscClearCoatWeight(), 0.0f, 1.0f);
+    args.nfscClearCoatRoughness = std::clamp(nfscClearCoatRoughness(), 0.01f, 1.0f);
+    args.nfscFlakeStrength = std::clamp(nfscFlakeStrength(), 0.0f, 0.3f);
+    args.nfscFlakeScale = std::clamp(nfscFlakeScale(), 16.0f, 2048.0f);
     args.albedoScale = albedoScale();
     args.albedoBias = albedoBias();
     args.roughnessScale = roughnessScale();

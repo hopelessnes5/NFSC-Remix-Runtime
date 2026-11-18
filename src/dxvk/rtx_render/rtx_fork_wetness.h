@@ -76,6 +76,10 @@ namespace dxvk {
     RTX_OPTION_ARGS("rtx.wet", float, microAmplitude, 0.03f,
                     "Height range in world units of the small scale unevenness that puddles form in on flat ground.",
                     args.minValue = 0.001f, args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.wet", float, materialHeightWeight, 0.0f,
+                    "Optional weight of each material's POM height field in puddle depth. Uses the material's displacement range; "
+                    "0 disables this contribution. Requires a height texture and nonzero displacement on the material.",
+                    args.minValue = 0.0f, args.maxValue = 1.0f);
     RTX_OPTION_ARGS("rtx.wet", float, noiseScale, 1.0f,
                     "Size in world units of one cell of that unevenness.",
                     args.minValue = 0.1f, args.maxValue = 100.0f);

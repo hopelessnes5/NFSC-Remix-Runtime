@@ -84,6 +84,10 @@ namespace dxvk {
                  "changing direction when you look around. 0.06 gives ~1.2 m/s, slanting 9.5 m/s rain by about 7 "
                  "degrees. Values above ~0.1 are for deliberately wind-driven looks (blizzard, sandstorm) where "
                  "near-horizontal travel is the point.");
+      RTX_OPTION("rtx.weather.precipitation", float, worldScaleFactor, 1.0f,
+                 "Local scale for native weather precipitation physical dimensions and motion. 1 preserves the "
+                 "authored values. This does not change rtx.sceneScale, wetness, or other particle systems. "
+                 "The correct value depends on the game's native world units and is not inferred automatically.");
 
       // Global user-taste multipliers applied ON TOP of the blended per-preset look.
       // The per-preset fields are owned by the WeatherBlender snapshot while active, so these are

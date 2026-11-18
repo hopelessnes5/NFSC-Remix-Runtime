@@ -830,9 +830,12 @@ namespace dxvk {
           RemixGui::SliderFloat("Metallic Bias", &OpaqueMaterialOptions::metallicBiasObject(), -1.0f, 1.f, "%.3f", sliderFlags);
           RemixGui::SliderFloat("Roughness Scale", &OpaqueMaterialOptions::roughnessScaleObject(), 0.0f, 1.f, "%.3f", sliderFlags);
           RemixGui::SliderFloat("Roughness Bias", &OpaqueMaterialOptions::roughnessBiasObject(), -1.0f, 1.f, "%.3f", sliderFlags);
+          RemixGui::SliderFloat("Carbon Clear Coat Weight", &OpaqueMaterialOptions::nfscClearCoatWeightObject(), 0.0f, 1.0f, "%.2f", sliderFlags);
+          RemixGui::SliderFloat("Carbon Clear Coat Roughness", &OpaqueMaterialOptions::nfscClearCoatRoughnessObject(), 0.01f, 1.0f, "%.3f", sliderFlags);
+          RemixGui::SliderFloat("Carbon Experimental Flake Strength", &OpaqueMaterialOptions::nfscFlakeStrengthObject(), 0.0f, 0.3f, "%.3f", sliderFlags);
+          RemixGui::DragFloat("Carbon Experimental Flake Scale", &OpaqueMaterialOptions::nfscFlakeScaleObject(), 1.0f, 16.0f, 2048.0f, "%.1f", sliderFlags);
           RemixGui::DragFloat("Hair Cards Mip Bias", &RtxOptions::hairCardMipBiasObject(), 0.25f, -32.0f, 16.0f, "%.2f", sliderFlags);
           RemixGui::DragFloat("Hair Cards Roughness Scale", &RtxOptions::hairCardRoughnessScaleObject(), 0.01f, 0.0f, 4.0f, "%.3f", sliderFlags);
-          fork_hooks::showHairCardSettings();
           RemixGui::SliderFloat("Normal Strength##1", &OpaqueMaterialOptions::normalIntensityObject(), -10.0f, 10.f, "%.3f", sliderFlags);
 
           RemixGui::Checkbox("Enable dual-layer animated water normal for Opaque", &OpaqueMaterialOptions::layeredWaterNormalEnableObject());
@@ -849,6 +852,9 @@ namespace dxvk {
 
         if (RemixGui::CollapsingHeader("Translucent", collapsingHeaderFlags)) {
           ImGui::Indent();
+
+          RemixGui::DragFloat("Carbon Tint Reference Distance (USD fallback)", &SceneManager::measurementDistanceObject(), 0.01f, 0.01f, 50.0f, "%.3f", sliderFlags);
+          RemixGui::DragFloat("Carbon Tint Thickness Override (0 = USD)", &SceneManager::thicknessOverrideObject(), 0.01f, 0.0f, 50.0f, "%.3f", sliderFlags);
 
           RemixGui::SliderFloat("Transmit. Color Scale", &TranslucentMaterialOptions::transmittanceColorScaleObject(), 0.0f, 1.f, "%.3f", sliderFlags);
           RemixGui::SliderFloat("Transmit. Color Bias", &TranslucentMaterialOptions::transmittanceColorBiasObject(), -1.0f, 1.f, "%.3f", sliderFlags);
@@ -1054,8 +1060,12 @@ namespace dxvk {
   }
 
   void ImGUI::showMainMenu(const Rc<DxvkContext>& ctx) {
-    // Target rtx.conf layer for developer menu changes
-    RtxOptionLayerTarget layerTarget(RtxOptionEditTarget::User);
+    // Keep the target choice for this menu session; changing it only affects
+    // edits made after the user switches the target.
+    static bool saveAdvancedEditsToRtxConf = false;
+    RtxOptionLayerTarget layerTarget(saveAdvancedEditsToRtxConf
+      ? RtxOptionEditTarget::RtxConf
+      : RtxOptionEditTarget::User);
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(m_windowOnRight ? viewport->Size.x - m_windowWidth : 0.f, viewport->Pos.y));
@@ -1146,6 +1156,15 @@ namespace dxvk {
     // ============================================================================
     if (RemixGui::CollapsingHeader("Settings Management", ImGuiTreeNodeFlags_DefaultOpen)) {
 
+      ImGui::Checkbox("Save advanced UI edits to rtx.conf", &saveAdvancedEditsToRtxConf);
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("This changes where future advanced UI edits are saved. Existing values in user.conf are not moved or changed.\n"
+          "user.conf has higher priority, so an existing user.conf value for the same option will still override rtx.conf.");
+      }
+      ImGui::TextWrapped("Target for new edits: %s. Existing user.conf overrides remain in place and take precedence over rtx.conf.",
+        saveAdvancedEditsToRtxConf ? "rtx.conf" : "user.conf");
+      ImGui::Spacing();
+
       // --- User Config Layer (higher priority, shown first) ---
       ImGui::Text("User Settings (user.conf):");
       if (ImGui::IsItemHovered()) {
@@ -1173,6 +1192,35 @@ namespace dxvk {
       }
       
       OptionLayerUI::renderLayerButtons(userLayer, "User");
+
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::Spacing();
+
+      // --- Remix Config Layer (lower priority than user.conf) ---
+      ImGui::Text("Remix Config (rtx.conf):");
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Game and mod configuration. Saved to `rtx.conf`.\n"
+          "Personal settings in user.conf take precedence when both files set the same option.");
+      }
+      if (rtxHasUnsaved) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "(unsaved changes)");
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip("Changes have been made since the rtx.conf file was last saved.");
+        }
+      }
+
+      if (rtxHasUnsaved && rtxConfLayer) {
+        if (RemixGui::CollapsingHeader("View Changes##SettingsManagementRtxConf")) {
+          ImGui::Indent();
+          OptionLayerUI::RenderOptions renderOpts;
+          renderOpts.uniqueId = "##SettingsManagementRtxConfLayerList";
+          OptionLayerUI::renderToImGui(rtxConfLayer, renderOpts);
+          ImGui::Unindent();
+        }
+      }
+      OptionLayerUI::renderLayerButtons(rtxConfLayer, "SettingsManagementRtxConf");
 
       ImGui::Spacing();
       ImGui::Separator();
@@ -2199,6 +2247,7 @@ namespace dxvk {
       // need to keep a reference to a texture that was passed to 'open()',
       // as 'open()' is called only once, but popup needs to reference that texture throughout open-close
       std::atomic<XXH64_hash_t> g_holdingTexture {};
+      std::atomic<XXH64_hash_t> g_holdingGeometry {};
       bool g_openWhenAvailable {};
 
       void openImguiPopupOrToggle() {
@@ -2209,7 +2258,7 @@ namespace dxvk {
                                   !lastOpenCategoryId.empty();
         g_wasLeftClick = false;
 
-        if (toggleWithoutPopup) {
+        if (toggleWithoutPopup && g_holdingTexture.load() != kEmptyHash) {
           if (auto textureSet = findTextureSetByUniqueId(lastOpenCategoryId.c_str())) {
             toggleTextureSelection(g_holdingTexture.load(),
                                    lastOpenCategoryId.c_str(),
@@ -2222,6 +2271,7 @@ namespace dxvk {
 
       void open(std::optional<XXH64_hash_t> texHash) {
         g_holdingTexture.exchange(texHash.value_or(kEmptyHash));
+        g_holdingGeometry.exchange(kEmptyHash);
         g_openWhenAvailable = false;
         // no need to wait, open immediately
         openImguiPopupOrToggle();
@@ -2229,6 +2279,7 @@ namespace dxvk {
 
       void openAsync() {
         g_holdingTexture.exchange(kEmptyHash);
+        g_holdingGeometry.exchange(kEmptyHash);
         g_openWhenAvailable = true;
       }
 
@@ -2241,7 +2292,7 @@ namespace dxvk {
       std::optional<XXH64_hash_t> produce(SceneManager& sceneMgr) {
         // delayed open, if waiting async to set g_holdingTexture
         if (g_openWhenAvailable) {
-          if (g_holdingTexture.load() != kEmptyHash) {
+          if (g_holdingTexture.load() != kEmptyHash || g_holdingGeometry.load() != kEmptyHash) {
             openImguiPopupOrToggle();
             g_openWhenAvailable = false;
           }
@@ -2266,11 +2317,24 @@ namespace dxvk {
 
         if (ImGui::BeginPopup(POPUP_NAME)) {
           const XXH64_hash_t texHash = g_holdingTexture.load();
-          if (texHash != kEmptyHash) {
+          const XXH64_hash_t geoHash = g_holdingGeometry.load();
+          if (texHash != kEmptyHash || geoHash != kEmptyHash) {
+            if (texHash != kEmptyHash) {
             ImGui::Text("Texture Info:\n%s", makeTextureInfo(texHash, isMaterialReplacement(sceneMgr, texHash), false).c_str());
             if (ImGui::Button("Copy Texture hash##texture_popup")) {
               ImGui::SetClipboardText(hashToString(texHash).c_str());
             }
+            }
+            if (geoHash != kEmptyHash) {
+              if (texHash != kEmptyHash) {
+                ImGui::Separator();
+              }
+              ImGui::Text("Geometry Hash:\n%s", hashToString(geoHash).c_str());
+              if (ImGui::Button("Copy Geometry hash##texture_popup")) {
+                ImGui::SetClipboardText(hashToString(geoHash).c_str());
+              }
+            }
+            if (texHash != kEmptyHash) {
             uint32_t textureFeatureFlags = 0;
             const auto& pair = g_imguiTextureMap.find(texHash);
             if (pair != g_imguiTextureMap.end()) {
@@ -2311,15 +2375,17 @@ namespace dxvk {
               }
             }
             RemixGui::PopLabelColumnFixedWidth();
+            }
 
             ImGui::EndPopup();
-            return texHash;
+            return texHash != kEmptyHash ? std::optional<XXH64_hash_t>{texHash} : std::nullopt;
           }
           ImGui::EndPopup();
           return {};
         } else {
           // popup is closed, forget texture
           g_holdingTexture.exchange(kEmptyHash);
+          g_holdingGeometry.exchange(kEmptyHash);
           return {};
         }
       }
@@ -2551,10 +2617,12 @@ namespace dxvk {
           tovec2i(ImGui::GetMousePos()) + Vector2i { 1, 1 },
 
           // and callback on result:
-          [](std::vector<ObjectPickingValue>&& objectPickingValues, std::optional<XXH64_hash_t> legacyTextureHash) {
+          [](std::vector<ObjectPickingValue>&& objectPickingValues, std::optional<XXH64_hash_t> legacyTextureHash,
+             std::optional<XXH64_hash_t> geometryHash) {
             // assert(legacyTextureHash);
             // found asynchronously the legacy texture hash, place it into texture_popup; so we would highlight it
             texture_popup::g_holdingTexture.exchange(legacyTextureHash.value_or(kEmptyHash));
+            texture_popup::g_holdingGeometry.exchange(geometryHash.value_or(kEmptyHash));
             // move UI menu focus
             g_jumpto.exchange(legacyTextureHash.value_or(kEmptyHash));
           });
@@ -2928,12 +2996,6 @@ namespace dxvk {
       if (RemixGui::CollapsingHeader("Global Wetness", collapsingHeaderClosedFlags)) {
         ImGui::Indent();
         fork_hooks::showWetnessSettings();
-        ImGui::Unindent();
-      }
-
-      if (RemixGui::CollapsingHeader("LOD Cross Fade", collapsingHeaderClosedFlags)) {
-        ImGui::Indent();
-        fork_hooks::showLodFadeSettings();
         ImGui::Unindent();
       }
 
@@ -3754,7 +3816,7 @@ namespace dxvk {
         auto& neuralUplift = common->metaNeuralUplift();
         RemixGui::Separator();
 
-        if (RemixGui::CollapsingHeader("DLSS5 - 3D-Guided Neural Generation [Experimental]", collapsingHeaderFlags)) {
+        if (RemixGui::CollapsingHeader("DLSS 3D-Guided Neural Generation [Experimental]", collapsingHeaderClosedFlags)) {
           ImGui::Indent();
           ImGui::PushID("DLSS 3D-Guided Neural Generation");
           neuralUplift.showImguiSettings();

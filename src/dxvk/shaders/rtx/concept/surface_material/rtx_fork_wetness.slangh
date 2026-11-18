@@ -539,10 +539,22 @@ void forkApplyD3DWetness(
         const float n2 = forkWetnessNoise4(xy, noiseFreq * 2.7f, 61.0f).x;
         const float micro = (n1 + 0.5f * n2) * (cb.wetMicroAmplitude / 1.5f);
 
+        // POM encodes height as 1 - R; its neutral plane is displaceIn within the total displacement range.
+        // Keep this opt-in and material-local: surfaces without a usable height field retain the old puddle model.
+        float materialRelief = 0.0f;
+        const float displacementRange = float(opaqueSurfaceMaterial.displaceIn) + float(opaqueSurfaceMaterial.displaceOut);
+        if (cb.wetMaterialHeightWeight > 0.0f && opaqueSurfaceMaterial.heightTextureIndex != BINDING_INDEX_INVALID && displacementRange > 0.0f)
+        {
+          // Match POM's level-zero filtered sample; this include is parsed before pomSampleHeight is declared.
+          const float sampledHeight = 1.0f - textures[nonuniformEXT(uint(opaqueSurfaceMaterial.heightTextureIndex))]
+            .SampleLevel(samplers[nonuniformEXT(uint(opaqueSurfaceMaterial.samplerIndex))], surfaceInteraction.textureCoordinates, 0).r;
+          materialRelief = (sampledHeight * displacementRange - float(opaqueSurfaceMaterial.displaceIn)) * cb.wetMaterialHeightWeight;
+        }
+
         // Measured depressions lower the ground, slopes shed the water
         const float depression = onMappedGround ? max(rainMap.z, 0.0f) * cb.wetDepressionWeight : 0.0f;
         const float slopeFade = onMappedGround ? 1.0f - smoothstep(cb.wetSlopeLimit, cb.wetSlopeLimit * (1.0f + cb.wetSlopeFeather), rainMap.w) : 1.0f;
-        const float terrain = micro - depression;
+        const float terrain = micro - depression + materialRelief;
 
         // The level rises with wetness: -amplitude (dry, nothing under water) to +amplitude at full coverage
         const float level = cb.wetMicroAmplitude * (2.0f * saturate(cb.wetPuddleCoverage) * wetness - 1.0f);

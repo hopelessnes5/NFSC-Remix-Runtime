@@ -171,6 +171,7 @@
 #define WRITE_CONSTANT_MEMBER_FUNC(name, usd_attr, type, minVal, maxVal, defaultVal) \
       type& get##name() { return m_##name; } \
       const type& get##name() const { return m_##name; } \
+      bool hasAuthored##name() const { return m_dirty.test(DirtyFlags::k_##name); } \
       void set##name(const type value) { m_##name = value; m_dirty.set(DirtyFlags::k_##name); sanitizeData(); updateCachedHash(); } \
       static pxr::TfToken get##name##Token() { return pxr::TfToken("inputs:"#usd_attr); }
 

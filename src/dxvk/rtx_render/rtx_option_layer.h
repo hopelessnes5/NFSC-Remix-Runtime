@@ -51,6 +51,7 @@ namespace dxvk {
   //   - No flag → Derived layer
   enum class RtxOptionEditTarget {
     User,    // User-driven changes from any UI (User Graphics Menu or Dev Menu)
+    RtxConf, // Explicitly route all saveable UI changes to rtx.conf
     Derived  // Code-driven changes (quality presets, OnChange callbacks, automation)
   };
 

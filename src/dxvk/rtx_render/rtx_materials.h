@@ -95,11 +95,12 @@ enum REMIX_MODIFIER_FROM_D3D : std::uint16_t {
   REMIX_MODIFIER_FROM_D3D_GLOBAL_UV_MODIFIER = 1 << 6,
   REMIX_MODIFIER_FROM_D3D_TRANSLUCENT_WORLDPOS_AS_TEXUV = 1 << 7,
   REMIX_MODIFIER_FROM_D3D_TRANSLUCENT_FADE_NORMAL_UNTIL_DIST = 1 << 8,
-  REMIX_MODIFIER_FROM_D3D_LOD_FADE = 1 << 9,
+  REMIX_MODIFIER_FROM_D3D_NFSC_PAINT = 1 << 9,
+  REMIX_MODIFIER_FROM_D3D_NFSC_RIM_FINISH = 1 << 10,
+  REMIX_MODIFIER_FROM_D3D_NFSC_RIM_CLEAR_COAT = 1 << 11,
+  REMIX_MODIFIER_FROM_D3D_NFSC_RIM_METALLIC_FLAKES = 1 << 12,
+  REMIX_MODIFIER_FROM_D3D_NFSC_GLASS_TINT = 1 << 13,
 };
-
-// With REMIX_MODIFIER_FROM_D3D_LOD_FADE set, the top byte of the modifier word is the draw's fade opacity (rtx_fork_lod_fade.cpp).
-constexpr uint32_t REMIX_MODIFIER_FROM_D3D_LOD_FADE_OPACITY_SHIFT = 24;
 
 // Note: "Temporary" hacks to get RtxOptions data from this header file as we cannot include rtx_options directly
 // due to cyclic includes. This should be removed once the rtx_materials implementation is moved to a source file.
@@ -297,14 +298,11 @@ struct RtSurface {
     textureFlags |= ((static_cast<uint32_t>(textureAlphaOperation)  & 0x7) << 11);
 
     textureFlags |= eyeParams ? (1 << 14) : 0;
-    textureFlags |= candidateAlphaTest ? (1 << 15) : 0;
-    // textureFlags bit 16 unused
+    // textureFlags bits 15-16 unused
 
     static_assert(static_cast<uint32_t>(TexGenMode::Count) <= 4);
     textureFlags |= ((static_cast<uint32_t>(texgenMode) & 0x3) << 17);
-    // stored inverted, zeroed surface data reads as not fading
-    textureFlags |= static_cast<uint32_t>(255u - lodFadeOpacity) << 19;
-    // textureFlags bits 27-30 unused
+    // textureFlags bits 19-30 unused
 
     writeGPUHelper(data, offset, textureFlags);
 
@@ -367,8 +365,6 @@ struct RtSurface {
   bool isMotionBlurMaskOut = false;
   bool skipSurfaceInteractionSpritesheetAdjustment = false;
   bool useCardNormals = false;
-  uint8_t lodFadeOpacity = 255; // fork: dithered LOD cross fade, 255 = not fading (rtx_fork_lod_fade.cpp)
-  bool candidateAlphaTest = false; // fork: hair card alpha tested at the ray query candidate (rtx_fork_hair_cards.cpp)
 
   RtTextureArgSource textureColorArg1Source = RtTextureArgSource::Texture;
   RtTextureArgSource textureColorArg2Source = RtTextureArgSource::None;
@@ -615,7 +611,8 @@ struct RtOpaqueSurfaceMaterial {
     uint32_t secondaryTextureIndex = 0,
     bool albedoTextureIsSrgb = false, bool emissiveTextureIsSrgb = false,
     bool skyLitParticle = false, bool usesLegacyDefaults = false,
-    uint16_t d3dModifierFlags = 0, uint16_t d3dData0 = 0, uint16_t d3dData1 = 0
+    uint16_t d3dModifierFlags = 0, uint16_t d3dData0 = 0, uint16_t d3dData1 = 0,
+    uint32_t nfscPaintPackedParams = 0u
   ) :
     m_albedoOpacityTextureIndex{ albedoOpacityTextureIndex }, m_secondaryTextureIndex{secondaryTextureIndex}, m_normalTextureIndex{ normalTextureIndex },
     m_tangentTextureIndex { tangentTextureIndex }, m_heightTextureIndex { heightTextureIndex }, m_roughnessTextureIndex{ roughnessTextureIndex },
@@ -635,7 +632,8 @@ struct RtOpaqueSurfaceMaterial {
     m_isHairCard(isHairCard), m_samplerFeedbackStamp{ samplerFeedbackStamp },
     m_albedoTextureIsSrgb{ albedoTextureIsSrgb }, m_emissiveTextureIsSrgb{ emissiveTextureIsSrgb },
     m_skyLitParticle{ skyLitParticle }, m_usesLegacyDefaults{ usesLegacyDefaults },
-    m_d3dModifierFlags{ d3dModifierFlags }, m_d3dData0{ d3dData0 }, m_d3dData1{ d3dData1 }
+    m_d3dModifierFlags{ d3dModifierFlags }, m_d3dData0{ d3dData0 }, m_d3dData1{ d3dData1 },
+    m_nfscPaintPackedParams{ nfscPaintPackedParams }
   {
     updateCachedData();
     updateCachedHash();
@@ -739,8 +737,13 @@ struct RtOpaqueSurfaceMaterial {
     writeGPUHelper(data, offset, glm::packHalf1x16(m_cachedEmissiveIntensity));
 
     // data[20 - 23]
-    writeGPUHelper(data, offset, glm::packHalf1x16(m_roughnessConstant));
-    writeGPUHelper(data, offset, glm::packHalf1x16(m_metallicConstant));
+    if (m_d3dModifierFlags & D3D_OPAQUE_MODIFIER_NFSC_PAINT) {
+      writeGPUHelperExplicit<2>(data, offset, uint16_t(m_nfscPaintPackedParams & 0xFFFFu));
+      writeGPUHelperExplicit<2>(data, offset, uint16_t(m_nfscPaintPackedParams >> 16));
+    } else {
+      writeGPUHelper(data, offset, glm::packHalf1x16(m_roughnessConstant));
+      writeGPUHelper(data, offset, glm::packHalf1x16(m_metallicConstant));
+    }
     writeGPUHelper(data, offset, glm::packHalf1x16(m_anisotropy));
     writeGPUHelperExplicit<2>(data, offset, m_tangentTextureIndex);
 
@@ -922,6 +925,7 @@ private:
       uint32_t d3dModifierFlags;          // NOTE: uint32_t to avoid padding
       uint32_t d3dData0;                  // NOTE: uint32_t to avoid padding
       uint32_t d3dData1;                  // NOTE: uint32_t to avoid padding
+      uint32_t nfscPaintPackedParams;     // NOTE: uint32_t to avoid padding
       // NOTE: There must be NO padding between members, as the struct is used for hashing
     };
     HashStruct hashData = HashStruct{
@@ -959,6 +963,7 @@ private:
       m_d3dModifierFlags,
       m_d3dData0,
       m_d3dData1,
+      m_nfscPaintPackedParams,
     };
     m_cachedHash = hashStructByMemory<HashStruct,
       &HashStruct::albedoOpacityTextureIndex,
@@ -994,7 +999,8 @@ private:
       &HashStruct::usesLegacyDefaults,
       &HashStruct::d3dModifierFlags,
       &HashStruct::d3dData0,
-      &HashStruct::d3dData1>(hashData);
+      &HashStruct::d3dData1,
+      &HashStruct::nfscPaintPackedParams>(hashData);
   }
 
   void updateCachedData() {
@@ -1068,6 +1074,7 @@ private:
   uint16_t m_d3dModifierFlags;
   uint16_t m_d3dData0;
   uint16_t m_d3dData1;
+  uint32_t m_nfscPaintPackedParams;
 
   XXH64_hash_t m_cachedHash;
 

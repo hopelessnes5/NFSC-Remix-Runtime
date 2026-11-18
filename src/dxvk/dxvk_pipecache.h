@@ -3,6 +3,9 @@
 #include <atomic>
 #include <condition_variable>
 #include <fstream>
+#include <filesystem>
+#include <future>
+#include <mutex>
 
 #include "dxvk_include.h"
 
@@ -22,8 +25,9 @@ namespace dxvk {
     
   public:
     
-    DxvkPipelineCache(const Rc<vk::DeviceFn>& vkd);
+    DxvkPipelineCache(const Rc<vk::DeviceFn>& vkd, const VkPhysicalDeviceProperties& properties, bool persist);
     ~DxvkPipelineCache();
+    void save();
     
     /**
      * \brief Pipeline cache handle
@@ -37,6 +41,9 @@ namespace dxvk {
     
     Rc<vk::DeviceFn>        m_vkd;
     VkPipelineCache         m_handle;
+    std::filesystem::path   m_path;
+    std::mutex              m_saveMutex;
+    std::future<void>       m_saveTask;
     
   };
   

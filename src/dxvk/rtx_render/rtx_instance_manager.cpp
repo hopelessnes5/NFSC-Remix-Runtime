@@ -26,7 +26,6 @@
 #include <vector>
 
 #include "rtx_context.h"
-#include "rtx_fork_hooks.h"
 #include "rtx_scene_manager.h"
 #include "rtx_instance_manager.h"
 #include "rtx_camera_manager.h"
@@ -1223,6 +1222,12 @@ namespace dxvk {
     // Note: this should happen on instance updates and not creation because the same geometry can be drawn
     // with different flags, and the instance manager can match an old instance of a geometry to a new one with different draw mode.
     currentInstance.m_vkInstance.flags = determineInstanceFlags(drawCall, currentInstance.surface);
+    // Carbon windshield tint must be hittable from both sides. Limit this to
+    // tagged translucent draws; leave culling of other geometry unchanged.
+    if (currentInstance.m_materialType == MaterialDataType::Translucent &&
+        (drawCall.getMaterialData().remixModifierFromD3D & REMIX_MODIFIER_FROM_D3D_NFSC_GLASS_TINT)) {
+      currentInstance.m_vkInstance.flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+    }
     currentInstance.isFrontFaceFlipped = (currentInstance.m_vkInstance.flags & VK_GEOMETRY_INSTANCE_TRIANGLE_FLIP_FACING_BIT_KHR) != 0;
 
     // Apply the decal sort index for this instance so we can approximate order correctness on the GPU in AHS
@@ -1280,14 +1285,6 @@ namespace dxvk {
       currentInstance.m_geometryFlags = VK_GEOMETRY_OPAQUE_BIT_KHR;
     }
     
-    // Fork: a dithered LOD cross fade keeps its geometry flags (baked into the BLAS) and turns non-opaque per instance, like clip planes
-    if (fork_hooks::applyLodFade(drawCall.getMaterialData(), currentInstance.surface)) {
-      currentInstance.m_vkInstance.flags |= VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR;
-    }
-
-    // Fork: an alpha tested hair card is alpha tested at the ray query candidate (its geometry is non-opaque already)
-    fork_hooks::applyHairCardCandidate(drawCall.testCategoryFlags(InstanceCategories::HairCards), currentInstance.isOpaque(), currentInstance.surface);
-
     // Enable backface culling for Portals to avoid additional hits to the back of Portals
     if (currentInstance.m_materialType == MaterialDataType::RayPortal) {
       currentInstance.m_vkInstance.flags &= ~VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;

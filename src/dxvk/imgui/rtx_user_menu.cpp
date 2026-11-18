@@ -148,8 +148,12 @@ namespace dxvk {
   RemixGui::ComboWithKey<UpscalerType>& getUpscalerCombo(DxvkDLSS& dlss, DxvkRayReconstruction& rayReconstruction);
 
   void ImGUI::showUserMenu(const Rc<DxvkContext>& ctx) {
-    // Target user.conf layer for user menu changes
-    RtxOptionLayerTarget layerTarget(RtxOptionEditTarget::User);
+    // Let users explicitly choose whether new menu edits go to user.conf or
+    // rtx.conf. The default retains the historical user.conf routing.
+    static bool saveMenuEditsToRtxConf = false;
+    RtxOptionLayerTarget layerTarget(saveMenuEditsToRtxConf
+      ? RtxOptionEditTarget::RtxConf
+      : RtxOptionEditTarget::User);
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
 
@@ -190,6 +194,11 @@ namespace dxvk {
 
       {
         ImGui::TextSeparator("Display Settings");
+        ImGui::Checkbox("Save menu edits to rtx.conf", &saveMenuEditsToRtxConf);
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip("When enabled, settings edited in this menu are saved to rtx.conf instead of user.conf.\n"
+                            "Existing user.conf values take precedence over rtx.conf values with the same option name.");
+        }
         RemixGui::SliderInt("Brightness##user", &RtxOptions::userBrightnessObject(), 0, 100, "%d", ImGuiSliderFlags_AlwaysClamp);
         ImGui::Dummy({ 0.f, 4.f });
       }
@@ -249,8 +258,8 @@ namespace dxvk {
       ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(windowPaddingHalfX, 10));
       ImGui::Dummy(ImVec2(0.0f, 0.0f));
 
-      // Center align - 3 buttons now
-      const ImVec2 buttonSize = ImVec2((ImGui::GetWindowSize().x - windowPaddingX) / 3 - ImGui::GetStyle().ItemSpacing.x * 2 / 3, 36);
+      // Center align the four settings management buttons
+      const ImVec2 buttonSize = ImVec2((ImGui::GetWindowSize().x - windowPaddingX) / 4 - ImGui::GetStyle().ItemSpacing.x * 3 / 4, 36);
 
       // Make child window start at X offset of tab bar separator
       ImGui::SetCursorPosX(ImGui::GetCursorPosX() - windowPaddingHalfX);
@@ -296,6 +305,27 @@ namespace dxvk {
       
       ImGui::SameLine();
       
+      // Developer/modder options edited from the user-facing menus are routed
+      // to rtx.conf by the UserSetting flag. Offer saving that layer here too.
+      RtxOptionLayer* rtxConfLayer = RtxOptionLayer::getRtxConfLayer();
+      const bool rtxUnsavedChanges = rtxConfLayer && rtxConfLayer->hasUnsavedChanges();
+      ImGui::BeginDisabled(!rtxUnsavedChanges);
+      if (ImGui::Button("Save Remix Config (rtx.conf)", buttonSize)) {
+        rtxConfLayer->save();
+      }
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        if (rtxUnsavedChanges) {
+          std::string tooltip = OptionLayerUI::renderToString(rtxConfLayer, "rtx.conf");
+          tooltip += "\nSaves developer and mod configuration changes to rtx.conf.";
+          RemixGui::SetTooltipUnformatted(tooltip.c_str());
+        } else {
+          RemixGui::SetTooltipUnformatted("No unsaved changes in rtx.conf.");
+        }
+      }
+
+      ImGui::SameLine();
+
       // Clear User Settings button
       if (ImGui::Button("Delete All User Settings", buttonSize)) {
         if (userLayer) {
@@ -502,7 +532,7 @@ namespace dxvk {
     // NV-DXVK start: DLSS 3D-Guided Neural Generation, collapsed by default
     {
       ImGui::Dummy(ImVec2(0.0f, 3.0f));
-      if (RemixGui::CollapsingHeader("DLSS5 - 3D-Guided Neural Generation [Experimental]", ImGuiTreeNodeFlags_CollapsingHeader | ImGuiTreeNodeFlags_DefaultOpen)) {
+      if (RemixGui::CollapsingHeader("DLSS 3D-Guided Neural Generation [Experimental]", ImGuiTreeNodeFlags_CollapsingHeader)) {
         ImGui::PushItemWidth(static_cast<float>(subItemWidth));
         ImGui::Indent(static_cast<float>(subItemIndent));
         ImGui::PushID("DLSS 3D-Guided Neural Generation");

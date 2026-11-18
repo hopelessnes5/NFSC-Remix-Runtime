@@ -172,7 +172,10 @@ void polymorphicSurfaceMaterialInteractionWriteToGBuffer(
     gBufferMemoryPolymorphicSurfaceMaterialInteractionCreate(polymorphicSurfaceMaterialInteraction);
 
   albedoTexture[position] = vec4(gBufferMemoryPolymorphicSurfaceMaterialInteraction.albedo, 1.0);
-  baseReflectivityTexture[position] = vec4(gBufferMemoryPolymorphicSurfaceMaterialInteraction.baseReflectivity, 1.0);
+  const bool hasClearCoat = polymorphicSurfaceMaterialInteraction.type == surfaceMaterialTypeOpaque &&
+    (polymorphicSurfaceMaterialInteraction.bdata0 & OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_NFSC_CLEAR_COAT) != 0;
+  baseReflectivityTexture[position] = vec4(gBufferMemoryPolymorphicSurfaceMaterialInteraction.baseReflectivity,
+    hasClearCoat ? GBUFFER_PRIMARY_REFLECTIVITY_CLEAR_COAT_ALPHA : 1.0f);
 
   f16vec3 virtualShadingNormal = gBufferMemoryPolymorphicSurfaceMaterialInteraction.worldShadingNormal;
 

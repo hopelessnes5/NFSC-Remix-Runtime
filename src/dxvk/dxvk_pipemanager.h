@@ -141,6 +141,7 @@ namespace dxvk {
 
 // NV-DXVK start
     uint32_t remixShaderCompilationCount() const;
+    void savePipelineCacheIfReady(uint32_t frameId);
 // NV-DXVK end
 
     /**
@@ -153,6 +154,7 @@ namespace dxvk {
     DxvkDevice*               m_device;
     Rc<DxvkPipelineCache>     m_cache;
     Rc<DxvkStateCache>        m_stateCache;
+    std::atomic<uint32_t>     m_lastCacheSaveFrame { 0 };
 
     std::atomic<uint32_t>     m_numComputePipelines  = { 0 };
     std::atomic<uint32_t>     m_numGraphicsPipelines = { 0 };

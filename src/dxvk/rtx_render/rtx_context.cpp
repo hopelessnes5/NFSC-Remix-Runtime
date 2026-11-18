@@ -533,6 +533,9 @@ namespace dxvk {
 
     // Whether a ray-traced scene is actually being rendered this frame.
     const bool isCameraValid = getSceneManager().getCamera().isValid(m_device->getCurrentFrameId());
+    if (m_rayTracingSupported && isRaytracingEnabled && isCameraValid) {
+      common->pipelineManager().savePipelineCacheIfReady(m_device->getCurrentFrameId());
+    }
 
     // Determine and set present throttle delay
     // Note: This must be done before the early out returns below which is why some logic here is redundant (e.g. checking if ray tracing is supported again)
@@ -1450,8 +1453,6 @@ namespace dxvk {
     TranslucentMaterialOptions::fillShaderParams(constants.translucentMaterialArgs);
     fork_hooks::fillWaterShaderParams(constants);
     fork_hooks::fillWetnessShaderParams(*this, constants);
-    fork_hooks::fillLodFadeShaderParams(constants);
-    fork_hooks::fillHairCardShaderParams(constants);
     ViewDistanceOptions::fillShaderParams(constants.viewDistanceArgs, RtxOptions::getMeterToWorldUnitScale());
     constants.alphaBlendSurfacePackMult = RtxOptions::getMeterToWorldUnitScale();
 
@@ -2486,7 +2487,7 @@ namespace dxvk {
             const uint32_t* readback = mapAs<const uint32_t*>(cReadbackDst);
             if (!readback || cReadbackDst->info().size < onePixelInBytes) {
               assert(0);
-              cCallback(std::vector<ObjectPickingValue>{}, std::nullopt);
+              cCallback(std::vector<ObjectPickingValue>{}, std::nullopt, std::nullopt);
               return;
             }
 
@@ -2510,11 +2511,14 @@ namespace dxvk {
               m_common->getSceneManager().findLegacyTextureHashByObjectPickingValue(primaryValue) :
               std::optional<XXH64_hash_t>{};
 
-            cCallback(std::move(values), legacyHashForPrimaryValue);
+            auto geometryHashForPrimaryValue = g_allowMappingLegacyHashToObjectPickingValue ?
+              m_common->getSceneManager().findGeometryHashByObjectPickingValue(primaryValue) :
+              std::optional<XXH64_hash_t>{};
+            cCallback(std::move(values), legacyHashForPrimaryValue, geometryHashForPrimaryValue);
           }
         ));
       } else {
-        request->callback(std::vector<ObjectPickingValue>{}, std::nullopt);
+        request->callback(std::vector<ObjectPickingValue>{}, std::nullopt, std::nullopt);
       }
     }
 

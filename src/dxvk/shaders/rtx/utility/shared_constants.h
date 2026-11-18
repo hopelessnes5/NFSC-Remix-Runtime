@@ -63,6 +63,14 @@ static const uint8_t surfaceMaterialTypeMask = uint8_t(0x3u);
 
 #define OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_HAS_HEIGHT_TEXTURE (1 << 0)
 #define OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_USE_THIN_FILM_LAYER (1 << 1)
+// Carries clear coat eligibility through polymorphic and G-buffer interactions.
+#define OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_NFSC_CLEAR_COAT (1 << 3)
+// One of the four exact levels in the primary reflectivity buffer's 2-bit alpha.
+// Zero is used after demodulation adjustment and one is the default on write.
+#define GBUFFER_PRIMARY_REFLECTIVITY_CLEAR_COAT_ALPHA (1.0f / 3.0f)
+// RS212 high byte. Older Carbon plugins send zero for this field.
+#define NFSC_PAINT_PACKED_NO_CLEAR_COAT (1u << 24)
+#define NFSC_PAINT_PACKED_METALLIC_FLAKES (1u << 25)
 // flags overlap with type field when in gbuffer, which occupies last 2 bits.
 #define OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_MASK 0x3F
 
@@ -80,6 +88,9 @@ static const uint8_t surfaceMaterialTypeMask = uint8_t(0x3u);
 #define D3D_OPAQUE_MODIFIER_REM_VERTEX_COLOR_KEEP_ALPHA (1 << 2)
 #define D3D_OPAQUE_MODIFIER_VEHICLE_DECAL_DIRT (1 << 3)
 #define D3D_OPAQUE_MODIFIER_GLOBAL_UV_MODIFIER (1 << 4)
+#define D3D_OPAQUE_MODIFIER_NFSC_PAINT (1 << 5)
+#define D3D_OPAQUE_MODIFIER_NFSC_RIM_CLEAR_COAT (1 << 6)
+#define D3D_OPAQUE_MODIFIER_NFSC_RIM_METALLIC_FLAKES (1 << 7)
 
 #define D3D_TRANSLUCENT_MODIFIER_RAINDROPS (1 << 0)
 #define D3D_TRANSLUCENT_MODIFIER_WORLDPOS_AS_TEXUV (1 << 1)

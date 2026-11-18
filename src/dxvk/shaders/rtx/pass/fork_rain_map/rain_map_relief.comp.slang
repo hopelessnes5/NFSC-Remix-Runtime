@@ -55,42 +55,92 @@ void main(uint2 threadId : SV_DispatchThreadID)
     return;
   }
 
-  // Two rings of eight neighbours at 1.5 m and 3 m
+  // The inner ring is enough for local slope and basin shape.
   const int r1 = max(1, int(round(1.5f / cb.wetMapTexel)));
-  const int r2 = max(r1 + 1, int(round(3.0f / cb.wetMapTexel)));
   const int d1 = max(1, int(round(float(r1) * 0.7071f)));
-  const int d2 = max(d1 + 1, int(round(float(r2) * 0.7071f)));
-  const int2 offsets[16] = {
-    int2(r1, 0), int2(-r1, 0), int2(0, r1), int2(0, -r1), int2(d1, d1), int2(-d1, d1), int2(d1, -d1), int2(-d1, -d1),
-    int2(r2, 0), int2(-r2, 0), int2(0, r2), int2(0, -r2), int2(d2, d2), int2(-d2, d2), int2(d2, -d2), int2(-d2, -d2)
+  const int2 offsets[8] = {
+    int2(r1, 0), int2(-r1, 0), int2(0, r1), int2(0, -r1),
+    int2(d1, d1), int2(-d1, d1), int2(d1, -d1), int2(-d1, -d1)
   };
 
-  float sum = 0.0f;
-  float count = 0.0f;
-  // Slope: least squares plane through the inner ring (the ring is symmetric, so the cross terms cancel)
-  float sxx = 0.0f, syy = 0.0f, sxh = 0.0f, syh = 0.0f;
+  // Fit a plane to the inner ring with centered coordinates. Missing samples and height
+  // rejection make the surviving ring asymmetric, so its cross term cannot be assumed zero.
+  float sumX = 0.0f, sumY = 0.0f, sumH = 0.0f;
+  float sumXX = 0.0f, sumYY = 0.0f, sumXY = 0.0f;
+  float sumXH = 0.0f, sumYH = 0.0f;
+  float sampleCount = 0.0f;
+  float innerHeights[8];
+  bool innerValid[8];
   [unroll]
-  for (int i = 0; i < 16; ++i)
+  for (int i = 0; i < 8; ++i)
+  {
+    innerValid[i] = false;
+  }
+  [unroll]
+  for (int i = 0; i < 8; ++i)
   {
     float neighbour;
     if (loadHeight(int2(threadId) + offsets[i], neighbour) && abs(neighbour - height) < kNeighbourRange)
     {
+      const vec2 d = vec2(offsets[i]) * cb.wetMapTexel;
       const float dh = neighbour - height;
-      sum += dh;
-      count += 1.0f;
-      if (i < 8)
-      {
-        const vec2 d = vec2(offsets[i]) * cb.wetMapTexel;
-        sxx += d.x * d.x;
-        syy += d.y * d.y;
-        sxh += d.x * dh;
-        syh += d.y * dh;
-      }
+      innerHeights[i] = dh;
+      innerValid[i] = true;
+      sumX += d.x;
+      sumY += d.y;
+      sumH += dh;
+      sumXX += d.x * d.x;
+      sumYY += d.y * d.y;
+      sumXY += d.x * d.y;
+      sumXH += d.x * dh;
+      sumYH += d.y * dh;
+      sampleCount += 1.0f;
     }
   }
-  const float depression = count > 0.0f ? sum / count : 0.0f;
-  const float gx = sxx > 0.0f ? sxh / sxx : 0.0f;
-  const float gy = syy > 0.0f ? syh / syy : 0.0f;
+
+  float gx = 0.0f;
+  float gy = 0.0f;
+  float depression = 0.0f;
+  if (sampleCount >= 3.0f)
+  {
+    const float invCount = 1.0f / sampleCount;
+    const float meanX = sumX * invCount;
+    const float meanY = sumY * invCount;
+    const float meanH = sumH * invCount;
+    const float cxx = sumXX - sumX * meanX;
+    const float cyy = sumYY - sumY * meanY;
+    const float cxy = sumXY - sumX * meanY;
+    const float cxh = sumXH - sumX * meanH;
+    const float cyh = sumYH - sumY * meanH;
+    const float determinant = cxx * cyy - cxy * cxy;
+    if (determinant > 1e-6f)
+    {
+      gx = (cxh * cyy - cyh * cxy) / determinant;
+      gy = (cyh * cxx - cxh * cxy) / determinant;
+    }
+
+    // A real basin has higher ground on both sides of at least one axis. Taking the
+    // weaker member of each opposite pair rejects a one-sided curb step while retaining
+    // a long channel (high on both banks, flat along its length) and closed basins.
+    float pairRise = 0.0f;
+    const int pairA[4] = { 0, 2, 4, 6 };
+    const int pairB[4] = { 1, 3, 7, 5 };
+    [unroll]
+    for (int i = 0; i < 4; ++i)
+    {
+      const int a = pairA[i];
+      const int b = pairB[i];
+      if (innerValid[a] && innerValid[b])
+      {
+        const float riseA = max(innerHeights[a], 0.0f);
+        const float riseB = max(innerHeights[b], 0.0f);
+        pairRise = max(pairRise, min(riseA, riseB));
+      }
+    }
+    // Requiring both sides of an axis to rise rejects a one-sided curb step while
+    // retaining a channel between its banks and a closed basin on a sloped plane.
+    depression = pairRise;
+  }
 
   // Rain cover blurred with a tent over the feather radius
   const int radius = clamp(int(round(cb.wetOcclusionFeather / cb.wetMapTexel)), 0, 12);

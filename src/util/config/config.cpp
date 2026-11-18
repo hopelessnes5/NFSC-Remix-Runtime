@@ -27,6 +27,10 @@
 #include <utility>
 #include <filesystem>
 #include <algorithm>
+#include <unordered_set>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include "config.h"
 
@@ -1465,20 +1469,100 @@ namespace dxvk {
     return Config();
   }
 
-  void Config::serializeCustomConfig(const Config& config, std::string filePath, std::string filterStr) {
-    // Open the file if it exists
-    std::ofstream stream(str::tows(filePath.c_str()).c_str());
-
-    if (!stream)
-      return;
-
+  bool Config::serializeCustomConfig(const Config& config, std::string filePath,
+                                    std::string filterStr, bool preserveUnmanagedLines) {
     Logger::info(str::format("Serializing config file: ", filePath));
 
-    for (const auto& line : config.m_options) {
-      // Write if no filter specified, or if key matches the filter
-      if (filterStr.empty() || line.first.find(filterStr) != std::string::npos)
-        stream << line.first << " = " << line.second << std::endl;
+    std::vector<std::string> outputLines;
+    if (preserveUnmanagedLines) {
+      std::unordered_map<std::string, std::string> pending;
+      for (const auto& [key, value] : config.m_options) {
+        if (filterStr.empty() || key.find(filterStr) != std::string::npos)
+          pending[key] = value;
+      }
+
+      std::ifstream input(str::tows(filePath.c_str()).c_str());
+      if (!input && std::filesystem::exists(filePath)) {
+        Logger::err(str::format("Failed to read existing config before preserving it: ", filePath));
+        return false;
+      }
+      std::unordered_set<std::string> written;
+      std::string line;
+      auto trim = [](std::string value) {
+        const auto first = value.find_first_not_of(" \t");
+        if (first == std::string::npos) return std::string();
+        const auto last = value.find_last_not_of(" \t");
+        return value.substr(first, last - first + 1);
+      };
+      while (std::getline(input, line)) {
+        const auto equals = line.find('=');
+        if (equals != std::string::npos) {
+          const std::string key = trim(line.substr(0, equals));
+          auto replacement = pending.find(key);
+          if (replacement != pending.end()) {
+            if (written.insert(key).second)
+              outputLines.push_back(key + " = " + replacement->second);
+            continue; // Collapse duplicate occurrences of the managed key.
+          }
+        }
+        outputLines.push_back(line);
+      }
+      if (input.bad()) {
+        Logger::err(str::format("Failed while reading existing config: ", filePath));
+        return false;
+      }
+      for (const auto& [key, value] : pending) {
+        if (!written.count(key))
+          outputLines.push_back(key + " = " + value);
+      }
+    } else {
+      for (const auto& [key, value] : config.m_options) {
+        if (filterStr.empty() || key.find(filterStr) != std::string::npos)
+          outputLines.push_back(key + " = " + value);
+      }
     }
+
+    // Write to a sibling temporary file first so an open/write failure cannot
+    // truncate the user's current config. Replace the destination only after a
+    // successful flush and close.
+    const std::string tempPath = filePath + ".codex-tmp";
+    const auto nativeTempPath = str::tows(tempPath.c_str());
+    const auto nativeFilePath = str::tows(filePath.c_str());
+    {
+      std::ofstream stream(nativeTempPath.c_str(), std::ios::out | std::ios::trunc);
+      if (!stream) {
+        Logger::err(str::format("Failed to open temporary config file for writing: ", tempPath));
+        return false;
+      }
+      for (const auto& outputLine : outputLines)
+        stream << outputLine << '\n';
+      stream.flush();
+      const bool flushSucceeded = stream.good();
+      stream.close();
+      if (!flushSucceeded || stream.fail()) {
+        Logger::err(str::format("Failed while writing temporary config file: ", tempPath));
+        std::filesystem::remove(nativeTempPath);
+        return false;
+      }
+    }
+
+#ifdef _WIN32
+    if (!MoveFileExW(nativeTempPath.c_str(), nativeFilePath.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+      Logger::err(str::format("Failed to replace config file: ", filePath));
+      std::filesystem::remove(nativeTempPath);
+      return false;
+    }
+#else
+    std::error_code ec;
+    std::filesystem::rename(nativeTempPath, nativeFilePath, ec);
+    if (ec) {
+      Logger::err(str::format("Failed to replace config file: ", filePath, " (", ec.message(), ")"));
+      std::filesystem::remove(nativeTempPath);
+      return false;
+    }
+#endif
+    return true;
   }
 
   // NV-DXVK start: Extend logOptions function

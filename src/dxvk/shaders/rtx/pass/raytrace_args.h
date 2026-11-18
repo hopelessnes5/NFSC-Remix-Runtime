@@ -473,6 +473,7 @@ struct RaytraceArgs {
   float wetPuddleOcclusion;
   float wetNoiseScale;
   float wetMicroAmplitude;
+  float wetMaterialHeightWeight;
   float wetDepressionWeight;
   float wetSlopeLimit;
   float wetEdgeWidth;
@@ -492,13 +493,6 @@ struct RaytraceArgs {
 
   // Fork: rtx.cardNormals.upWeight for CardNormals surfaces (surface_interaction.slangh).
   float cardNormalsUpWeight;
-
-  // Fork: rtx.lodFade.* LOD cross fade, filled by rtx_fork_lod_fade.cpp.
-  uint lodFadeDebugForceOpacity;
-  uint lodFadeActive;
-
-  // Fork: rtx.hairCards.* candidate alpha test, filled by rtx_fork_hair_cards.cpp.
-  uint hairCardCandidateActive;
 
   // NOTE: Add structs to the top section of RaytraceArgs, not the bottom.
   // NOTE: bool does not work in debug builds, use uint instead.

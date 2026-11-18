@@ -30,7 +30,8 @@ namespace dxvk {
           DxvkDevice*         device,
           DxvkRenderPassPool* passManager)
   : m_device    (device),
-    m_cache     (new DxvkPipelineCache(device->vkd())) {
+    m_cache     (new DxvkPipelineCache(device->vkd(), device->adapter()->deviceProperties(),
+                 env::getEnvVar("DXVK_STATE_CACHE") != "0" && device->config().enableStateCache)) {
     std::string useStateCache = env::getEnvVar("DXVK_STATE_CACHE");
     
     if (useStateCache != "0" && device->config().enableStateCache)
@@ -146,6 +147,15 @@ namespace dxvk {
 // NV-DXVK start
   uint32_t DxvkPipelineManager::remixShaderCompilationCount() const {
     return m_stateCache != nullptr ? m_stateCache->remixShaderCompilationCount() : 0;
+  }
+
+  void DxvkPipelineManager::savePipelineCacheIfReady(uint32_t frameId) {
+    uint32_t previous = m_lastCacheSaveFrame.load();
+    const uint32_t interval = previous == 0 ? 300 : 1800;
+    if (frameId - previous >= interval && !isCompilingShaders() &&
+        m_lastCacheSaveFrame.compare_exchange_strong(previous, frameId)) {
+      m_cache->save();
+    }
   }
 // NV-DXVK end
 

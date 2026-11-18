@@ -19,6 +19,8 @@
 * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 * DEALINGS IN THE SOFTWARE.
 */
+#include <cmath>
+#include <cstring>
 #include <limits>
 #include <mutex>
 #include <vector>
@@ -57,6 +59,12 @@
 #include "rtx/pass/particles/particle_system_common.h"
 
 namespace {
+  uint32_t floatBitsToUint(float value) {
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+  }
+
   // helper function to ensure generating spatialMapHash for external draws is done the same way in multiple places.
   XXH64_hash_t spatialMapHashForExternalDrawMesh(remixapi_MeshHandle mesh) {
     const uintptr_t meshId = reinterpret_cast<uintptr_t>(mesh);
@@ -1214,13 +1222,6 @@ namespace dxvk {
 
     instance.setFrameLastUpdated(m_device->getCurrentFrameId());
 
-    // Fork: the LOD fade opacity is not part of the material identity, so it keeps moving on the preserve path; the hair
-    // card mark is reapplied so the frame knows one is in the scene
-    if (pInput != nullptr) {
-      fork_hooks::applyLodFade(pInput->getMaterialData(), instance.surface);
-      fork_hooks::applyHairCardCandidate(pInput->testCategoryFlags(InstanceCategories::HairCards), instance.isOpaque(), instance.surface);
-    }
-
     // One-shot cleanup for the first preserve frame after a dynamic update; isPreservePath is
     // false on the dynamic path, so flipping it here doubles as the "first frame" signal.
     if (!instance.surface.isPreservePath) {
@@ -1653,6 +1654,10 @@ namespace dxvk {
     if (h != kEmptyHash) {
       meta.legacyTextureHash2 = h;
     }
+    meta.geometryHash = drawCallState.getGeometryData().getHashForRule(HashRule(rules::TopologicalHash));
+    if (meta.geometryHash == kEmptyHash) {
+      meta.geometryHash = drawCallState.getGeometryData().getHashForRule(RtxOptions::geometryAssetHashRule());
+    }
 
     std::lock_guard lock { m_drawCallMeta.mutex };
     auto [iter, isNew] = m_drawCallMeta.infos[m_drawCallMeta.ticker].emplace(objectPickingValue, meta);
@@ -1708,6 +1713,26 @@ namespace dxvk {
     const bool isHairCard = drawCallState.testCategoryFlags(InstanceCategories::HairCards);
     preCreationHash = XXH64(&isHairCard, sizeof(isHairCard), preCreationHash);
 
+    // Keep USD material lookup keyed by the original game material, but give
+    // differently tinted translucent draws separate resolved surface materials.
+    if (renderMaterialDataType == MaterialDataType::Translucent) {
+      const auto& legacy = drawCallState.getMaterialData();
+      if (legacy.remixModifierFromD3D & REMIX_MODIFIER_FROM_D3D_NFSC_GLASS_TINT) {
+        const uint32_t tintTag = REMIX_MODIFIER_FROM_D3D_NFSC_GLASS_TINT;
+        const uint32_t tintRgb = floatBitsToUint(legacy.remixFloatRS213FromD3D) & 0x00ffffffu;
+        preCreationHash = XXH64(&tintTag, sizeof(tintTag), preCreationHash);
+        preCreationHash = XXH64(&tintRgb, sizeof(tintRgb), preCreationHash);
+        const bool hasTintDistance = renderMaterialData.getTranslucentMaterialData().hasAuthoredTransmittanceMeasurementDistance();
+        preCreationHash = XXH64(&hasTintDistance, sizeof(hasTintDistance), preCreationHash);
+        const float tintThickness = std::clamp(thicknessOverride(), 0.0f, 50.0f);
+        preCreationHash = XXH64(&tintThickness, sizeof(tintThickness), preCreationHash);
+        if (!hasTintDistance) {
+          const float tintDistance = std::clamp(measurementDistance(), 0.01f, 50.0f);
+          preCreationHash = XXH64(&tintDistance, sizeof(tintDistance), preCreationHash);
+        }
+      }
+    }
+
     // For Opaque materials, fold in a bitmask of which texture slots are populated. MaterialData::getHash()
     // sums TextureRef::getImageHash() across slots, but render-target-backed TextureRefs (notably
     // TerrainBaker cascades) have a zero image hash, so two materials that differ only in cascade
@@ -1715,6 +1740,23 @@ namespace dxvk {
     // per-frame cache would serve the earlier "albedo only" entry to later draws that have valid
     // secondary cascades.
     if (renderMaterialDataType == MaterialDataType::Opaque) {
+      // The source texture hash remains unchanged across wheel finishes.
+      // Include the draw's finish in the surface cache, separate from USD lookup.
+      const auto& legacyMaterial = drawCallState.getMaterialData();
+      if (legacyMaterial.remixModifierFromD3D & REMIX_MODIFIER_FROM_D3D_NFSC_RIM_FINISH) {
+        const uint32_t finishTag = legacyMaterial.remixModifierFromD3D &
+          (REMIX_MODIFIER_FROM_D3D_NFSC_RIM_FINISH | REMIX_MODIFIER_FROM_D3D_NFSC_RIM_CLEAR_COAT |
+           REMIX_MODIFIER_FROM_D3D_NFSC_RIM_METALLIC_FLAKES);
+        preCreationHash = XXH64(&finishTag, sizeof(finishTag), preCreationHash);
+        preCreationHash = XXH64(&legacyMaterial.remixFloatRS213FromD3D, sizeof(float), preCreationHash);
+        preCreationHash = XXH64(&legacyMaterial.remixFloatRS214FromD3D, sizeof(float), preCreationHash);
+      }
+      if (legacyMaterial.remixModifierFromD3D & REMIX_MODIFIER_FROM_D3D_NFSC_PAINT) {
+        const uint32_t paintTag = legacyMaterial.remixModifierFromD3D & REMIX_MODIFIER_FROM_D3D_NFSC_PAINT;
+        preCreationHash = XXH64(&paintTag, sizeof(paintTag), preCreationHash);
+        preCreationHash = XXH64(&legacyMaterial.remixFloatRS212FromD3D, sizeof(float), preCreationHash);
+      }
+
       const auto& opaqueMaterialData = renderMaterialData.getOpaqueMaterialData();
       uint32_t texturePresenceMask = 0;
       texturePresenceMask |= opaqueMaterialData.getAlbedoOpacityTexture().isImageEmpty()             ? 0u : (1u << 0);
@@ -1791,6 +1833,7 @@ namespace dxvk {
       uint16_t d3dModifierFlags = 0u;
       uint16_t d3dData0 = 0u;
       uint16_t d3dData1 = 0u;
+      uint32_t nfscPaintPackedParams = 0u;
 
       constexpr Vector4 kWhiteModeAlbedo = Vector4(0.7f, 0.7f, 0.7f, 1.0f);
 
@@ -1878,6 +1921,50 @@ namespace dxvk {
           albedoOpacityConstant.y = legacyMaterialData.remixFloatRS214FromD3D;
           albedoOpacityConstant.z = legacyMaterialData.remixFloatRS215FromD3D;
           albedoOpacityConstant.w = legacyMaterialData.remixFloatRS216FromD3D;
+        }
+
+        if ((d3dModifiers & REMIX_MODIFIER_FROM_D3D_NFSC_RIM_FINISH) &&
+            !(d3dModifiers & (REMIX_MODIFIER_FROM_D3D_NFSC_PAINT | REMIX_MODIFIER_FROM_D3D_GLOBAL_UV_MODIFIER)) &&
+            !RtxOptions::useWhiteMaterialMode() && !enableEmissive) {
+          // The selected paint profile owns these two channels, just like
+          // body paint. Keep albedo, opacity, normals and the USD lookup hash.
+          if (std::isfinite(legacyMaterialData.remixFloatRS213FromD3D)) {
+            roughnessTextureIndex = kSurfaceMaterialInvalidTextureIndex;
+            roughnessConstant = std::clamp(legacyMaterialData.remixFloatRS213FromD3D, 0.f, 1.f);
+          }
+          if (std::isfinite(legacyMaterialData.remixFloatRS214FromD3D)) {
+            metallicTextureIndex = kSurfaceMaterialInvalidTextureIndex;
+            metallicConstant = std::clamp(legacyMaterialData.remixFloatRS214FromD3D, 0.f, 1.f);
+          }
+          if (d3dModifiers & REMIX_MODIFIER_FROM_D3D_NFSC_RIM_CLEAR_COAT) {
+            d3dModifierFlags |= D3D_OPAQUE_MODIFIER_NFSC_RIM_CLEAR_COAT;
+          }
+          if (d3dModifiers & REMIX_MODIFIER_FROM_D3D_NFSC_RIM_METALLIC_FLAKES) {
+            d3dModifierFlags |= D3D_OPAQUE_MODIFIER_NFSC_RIM_METALLIC_FLAKES;
+          }
+        }
+
+        if (d3dModifiers & REMIX_MODIFIER_FROM_D3D_NFSC_PAINT) {
+          const uint32_t incompatibleModifiers =
+            REMIX_MODIFIER_FROM_D3D_EMISSIVE_SCALAR |
+            REMIX_MODIFIER_FROM_D3D_ENABLE_VERTEX_COLOR |
+            REMIX_MODIFIER_FROM_D3D_REM_VERTEX_COLOR_KEEP_ALPHA |
+            REMIX_MODIFIER_FROM_D3D_VEHICLE_DECAL_DIRT |
+            REMIX_MODIFIER_FROM_D3D_GLOBAL_UV_MODIFIER;
+          const bool paintCompatible = !enableEmissive && !(d3dModifiers & incompatibleModifiers) &&
+            std::isfinite(legacyMaterialData.remixFloatRS213FromD3D) && legacyMaterialData.remixFloatRS213FromD3D >= 0.0f &&
+            std::isfinite(legacyMaterialData.remixFloatRS214FromD3D);
+          if (paintCompatible) {
+            const uint32_t packedColor = floatBitsToUint(legacyMaterialData.remixFloatRS211FromD3D);
+            nfscPaintPackedParams = floatBitsToUint(legacyMaterialData.remixFloatRS212FromD3D);
+            albedoOpacityConstant.x = float((packedColor >> 0) & 0xFFu) / 255.0f;
+            albedoOpacityConstant.y = float((packedColor >> 8) & 0xFFu) / 255.0f;
+            albedoOpacityConstant.z = float((packedColor >> 16) & 0xFFu) / 255.0f;
+            albedoOpacityConstant.w = float((packedColor >> 24) & 0xFFu) / 255.0f;
+            emissiveColorConstant.x = legacyMaterialData.remixFloatRS213FromD3D;
+            emissiveColorConstant.y = legacyMaterialData.remixFloatRS214FromD3D;
+            d3dModifierFlags |= D3D_OPAQUE_MODIFIER_NFSC_PAINT;
+          }
         }
       }
 
@@ -1971,7 +2058,7 @@ namespace dxvk {
         albedoTextureIsSrgb, emissiveTextureIsSrgb,
         opaqueMaterialData.getSkyLitParticle(),
         renderMaterialData.usesLegacyDefaults(),
-        d3dModifierFlags, d3dData0, d3dData1
+        d3dModifierFlags, d3dData0, d3dData1, nfscPaintPackedParams
       };
 
       surfaceMaterial.emplace(opaqueSurfaceMaterial);
@@ -2032,10 +2119,38 @@ namespace dxvk {
     uint16_t wetnessParams2 = 0u;
     float freeFloat01 = 0.0f;
     float freeFloat02 = 0.0f;
+    Vector3 transmittanceColor = translucentMaterialData.getTransmittanceColor();
+    float thinWallThickness = translucentMaterialData.getThinWallThickness();
 
     if (drawCallState) {
       const LegacyMaterialData& legacyMaterialData = drawCallState->getMaterialData();
       const uint32_t d3dModifiers = legacyMaterialData.remixModifierFromD3D;
+
+      // RS213 carries gamma-encoded RGB8 only when the plugin marks this
+      // draw as tinted glass. Otherwise preserve the USD material's color.
+      if (d3dModifiers & REMIX_MODIFIER_FROM_D3D_NFSC_GLASS_TINT) {
+        const float overriddenThickness = std::clamp(thicknessOverride(), 0.0f, 50.0f);
+        if (overriddenThickness > 0.0f) {
+          thinWallThickness = overriddenThickness;
+        }
+        const uint32_t rgb = floatBitsToUint(legacyMaterialData.remixFloatRS213FromD3D);
+        transmittanceColor = Vector3(
+          float(rgb & 0xffu) / 255.0f,
+          float((rgb >> 8) & 0xffu) / 255.0f,
+          float((rgb >> 16) & 0xffu) / 255.0f);
+        // The thin-wall shader normally assumes the color is measured over
+        // one unit. Convert the authored measurement distance to that reference
+        // for this tagged glass; the shader still uses the authored thickness.
+        const float distance = translucentMaterialData.hasAuthoredTransmittanceMeasurementDistance()
+          ? translucentMaterialData.getTransmittanceMeasurementDistance() : std::clamp(measurementDistance(), 0.01f, 50.0f);
+        if (translucentMaterialData.getEnableThinWalled() && std::isfinite(distance) && distance > 0.0f) {
+          const float inverseDistance = 1.0f / distance;
+          transmittanceColor = Vector3(
+            std::pow(transmittanceColor.x, inverseDistance),
+            std::pow(transmittanceColor.y, inverseDistance),
+            std::pow(transmittanceColor.z, inverseDistance));
+        }
+      }
 
       if (d3dModifiers & REMIX_MODIFIER_FROM_D3D_EMISSIVE_SCALAR) {
         emissiveIntensity *= legacyMaterialData.remixTempFloat01FromD3D;
@@ -2071,12 +2186,12 @@ namespace dxvk {
       emissiveColorTextureIndex,
       translucentMaterialData.getRefractiveIndex() * std::clamp(TranslucentMaterialOptions::refractiveIndexScale(), 0.0f, 3.0f),
       translucentMaterialData.getTransmittanceMeasurementDistance(),
-      translucentMaterialData.getTransmittanceColor(),
+      transmittanceColor,
       translucentMaterialData.getEnableEmission(),
       emissiveIntensity,
       translucentMaterialData.getEmissiveColorConstant(),
       translucentMaterialData.getEnableThinWalled(),
-      translucentMaterialData.getThinWallThickness(),
+      thinWallThickness,
       translucentMaterialData.getEnableDiffuseLayer(),
       samplerIndex,
       samplerFeedbackStamp,
@@ -2160,6 +2275,21 @@ namespace dxvk {
       if (m_drawCallMeta.ready[tick]) {
         if (auto h = tryFindIn(m_drawCallMeta.infos[tick], objectPickingValue)) {
           return h;
+        }
+      }
+    }
+    return std::nullopt;
+  }
+
+  std::optional<XXH64_hash_t> SceneManager::findGeometryHashByObjectPickingValue(uint32_t objectPickingValue) {
+    std::lock_guard lock { m_drawCallMeta.mutex };
+    const int ticks[] = { m_drawCallMeta.ticker, (m_drawCallMeta.ticker + m_drawCallMeta.MaxTicks - 1) % m_drawCallMeta.MaxTicks };
+    for (int tick : ticks) {
+      if (m_drawCallMeta.ready[tick]) {
+        const auto& table = m_drawCallMeta.infos[tick];
+        auto it = table.find(objectPickingValue);
+        if (it != table.end() && it->second.geometryHash != kEmptyHash) {
+          return it->second.geometryHash;
         }
       }
     }

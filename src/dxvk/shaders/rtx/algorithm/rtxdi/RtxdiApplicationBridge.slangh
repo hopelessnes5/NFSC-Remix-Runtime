@@ -378,7 +378,12 @@ RAB_Surface RAB_GetGBufferSurface(ivec2 pixel, bool previousFrame)
   surface.opaqueSurfaceMaterialInteraction.shadingNormal = signedOctahedralToSphereDirection(snorm2x16ToFloat2x32(PrimaryWorldShadingNormal[pixel]));
   surface.opaqueSurfaceMaterialInteraction.albedo = PrimaryAlbedo[pixel].rgb;
   surface.opaqueSurfaceMaterialInteraction.opacity = 1.0;
-  surface.opaqueSurfaceMaterialInteraction.baseReflectivity = PrimaryBaseReflectivity[pixel].rgb;
+  const vec4 baseReflectivity = PrimaryBaseReflectivity[pixel];
+  surface.opaqueSurfaceMaterialInteraction.baseReflectivity = baseReflectivity.rgb;
+  if (abs(baseReflectivity.a - GBUFFER_PRIMARY_REFLECTIVITY_CLEAR_COAT_ALPHA) < 0.1f)
+  {
+    surface.opaqueSurfaceMaterialInteraction.flags |= OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_NFSC_CLEAR_COAT;
+  }
   surface.opaqueSurfaceMaterialInteraction.emissiveRadiance = 0.0;
   
   calcRoughness(PrimaryPerceptualRoughness[pixel], 0.0,
@@ -506,12 +511,21 @@ float RAB_GetGITargetPdfForSurface(vec3 radiance, vec3 position, RAB_Surface sur
 
   surface.opaqueSurfaceMaterialInteraction.isotropicRoughness = max(surface.opaqueSurfaceMaterialInteraction.isotropicRoughness, cb.reSTIRGIRoughnessClamp);
   surface.opaqueSurfaceMaterialInteraction.anisotropicRoughness = max(surface.opaqueSurfaceMaterialInteraction.anisotropicRoughness, cb.reSTIRGIRoughnessClamp);
+  float coatTargetScale = 1.0f;
   if (cb.enableReSTIRGIDemodulatedTargetFunction)
   {
     float originalBrightness = max(0.001f,
       calcBt709Luminance(surface.opaqueSurfaceMaterialInteraction.albedo + surface.opaqueSurfaceMaterialInteraction.baseReflectivity));
-    surface.opaqueSurfaceMaterialInteraction.albedo /= originalBrightness;
-    surface.opaqueSurfaceMaterialInteraction.baseReflectivity /= originalBrightness;
+    if (hasNfscClearCoat(surface.opaqueSurfaceMaterialInteraction))
+    {
+      // Normalize the combined response, including the dielectric coat.
+      coatTargetScale = rcp(originalBrightness);
+    }
+    else
+    {
+      surface.opaqueSurfaceMaterialInteraction.albedo /= originalBrightness;
+      surface.opaqueSurfaceMaterialInteraction.baseReflectivity /= originalBrightness;
+    }
   }
   else
   {
@@ -520,6 +534,8 @@ float RAB_GetGITargetPdfForSurface(vec3 radiance, vec3 position, RAB_Surface sur
 
   SurfaceMaterialInteractionSplitWeight weight = opaqueSurfaceMaterialInteractionCalcProjectedWeight(
     surface.opaqueSurfaceMaterialInteraction, surface.minimalRayInteraction, L);
+  weight.diffuseReflectionWeight *= coatTargetScale;
+  weight.specularReflectionWeight *= coatTargetScale;
   weight.specularReflectionWeight = clamp(weight.specularReflectionWeight, vec3(0), vec3(RAB_RESTIR_GI_MAX_SPECULAR_BRDF));
 
   const vec3 scatteredRadiance = radiance * (weight.diffuseReflectionWeight + weight.specularReflectionWeight + weight.diffuseTransmissionWeight);

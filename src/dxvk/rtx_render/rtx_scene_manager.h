@@ -157,6 +157,11 @@ class SceneManager : public CommonDeviceObject, public ResourceCache {
   friend struct fork_hooks::RetainedSceneAccess;
 
 public:
+  RTX_OPTION("rtx.carbonTint", float, measurementDistance, 5.0f,
+    "Carbon glass tint reference distance when the USD material does not specify one.");
+  RTX_OPTION("rtx.carbonTint", float, thicknessOverride, 0.0f,
+    "Override Carbon tinted glass thickness; zero uses the USD material.");
+
   SceneManager(SceneManager const&) = delete;
   SceneManager& operator=(SceneManager const&) = delete;
 
@@ -268,6 +273,7 @@ public:
   [[nodiscard]] SamplerIndex trackSampler(Rc<DxvkSampler> sampler);
 
   std::optional<XXH64_hash_t> findLegacyTextureHashByObjectPickingValue(uint32_t objectPickingValue);
+  std::optional<XXH64_hash_t> findGeometryHashByObjectPickingValue(uint32_t objectPickingValue);
   std::vector<ObjectPickingValue> gatherObjectPickingValuesByTextureHash(XXH64_hash_t texHash);
 
   // Replacement material hash tracking
@@ -459,6 +465,7 @@ private:
   struct DrawCallMetaInfo {
     XXH64_hash_t legacyTextureHash { kEmptyHash };
     XXH64_hash_t legacyTextureHash2 { kEmptyHash };
+    XXH64_hash_t geometryHash { kEmptyHash };
   };
   struct DrawCallMeta {
     constexpr static inline uint8_t MaxTicks = 2;

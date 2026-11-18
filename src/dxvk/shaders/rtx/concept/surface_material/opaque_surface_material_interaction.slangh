@@ -55,6 +55,108 @@ float opaqueSurfaceMaterialInteractionGetFresnelGrazing(OpaqueSurfaceMaterialInt
 }
 // NV-DXVK end
 
+bool hasNfscClearCoat(OpaqueSurfaceMaterialInteraction material)
+{
+  return (material.flags & OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_NFSC_CLEAR_COAT) != 0;
+}
+
+float nfscClearCoatFresnel(float cosine)
+{
+  // An air-to-lacquer interface with IOR 1.5 reflects 4% at normal incidence.
+  return cb.opaqueMaterialArgs.nfscClearCoatWeight * evalTranslucentSchlickFresnel(0.04f, saturate(cosine));
+}
+
+// High-frequency continuous noise avoids a coarse repeated flake mask. Its
+// footprint fade converges unresolved flakes to their average response.
+vec2 nfscMetallicFlakeOrientation(vec2 uv, vec2 gradientX, vec2 gradientY)
+{
+  const float flakeScale = cb.opaqueMaterialArgs.nfscFlakeScale;
+  const vec2 p = uv * flakeScale;
+  const float footprint = max(length(gradientX), length(gradientY)) * flakeScale;
+  const float resolve = 1.0f - smoothstep(0.18f, 0.8f, footprint);
+  const vec2 randomOrientation = vec2(
+    simplexNoise3D(vec3(p, 17.13f)),
+    simplexNoise3D(vec3(p + vec2(31.7f, -47.2f), 83.91f)));
+  return randomOrientation * resolve;
+}
+
+float nfscMetallicFlakeViewResponse(vec2 orientation, vec3 geometryTangent,
+                                    vec3 geometryBitangent, vec3 viewDirection)
+{
+  const float tangentLengthSquared = dot(geometryTangent, geometryTangent);
+  const float bitangentLengthSquared = dot(geometryBitangent, geometryBitangent);
+  if (tangentLengthSquared <= materialEpsilon || bitangentLengthSquared <= materialEpsilon ||
+      dot(viewDirection, viewDirection) <= materialEpsilon)
+    return 1.0f;
+
+  const vec3 tangent = geometryTangent * rsqrt(tangentLengthSquared);
+  const vec3 bitangent = geometryBitangent * rsqrt(bitangentLengthSquared);
+  const vec3 view = normalize(viewDirection);
+  const vec2 viewTangent = vec2(dot(view, tangent), dot(view, bitangent));
+  const float viewAlignment = dot(orientation, viewTangent);
+
+  // This view-dependent F0 approximation suggests flake orientation glints;
+  // the light direction is unavailable during interaction construction.
+  return clamp(1.0f + cb.opaqueMaterialArgs.nfscFlakeStrength * viewAlignment, 0.0f, 1.0f);
+}
+
+vec2 nfscClearCoatRoughness()
+{
+  return vec2(calcRoughness(cb.opaqueMaterialArgs.nfscClearCoatRoughness));
+}
+
+float evalOpaqueGgx(vec2 roughness, vec3 incoming, vec3 outgoing, vec3 halfVector)
+{
+  return evalGGXNormalDistribution(roughness, halfVector.x, halfVector.y, halfVector.z) *
+    evalHeightCorrelatedGGXVisibility(roughness, incoming.x, outgoing.x, incoming.y, outgoing.y, incoming.z, outgoing.z);
+}
+
+float nfscClearCoatSamplingProbability(OpaqueSurfaceMaterialInteraction material, float viewCosine)
+{
+  const float coat = nfscClearCoatFresnel(viewCosine);
+  const vec3 base = evalOpaqueSchlickFresnel(material.baseReflectivity, viewCosine,
+    opaqueSurfaceMaterialInteractionGetFresnelGrazing(material));
+  return clamp(coat / max(coat + (1.0f - coat) * calcBt709Luminance(base), materialEpsilon), 0.05f, 0.95f);
+}
+
+float opaqueReflectionPdf(vec2 roughness, vec3 outgoing, vec3 halfVector)
+{
+  const float viewDotHalf = dot(outgoing, halfVector);
+#if OPAQUE_MATERIAL_USE_BOUNDED_VNDF_SAMPLING
+  return evalGGXBoundedVisibleNormalDistributionSamplePdf(roughness, outgoing.x, outgoing.y, outgoing.z,
+    halfVector.x, halfVector.y, halfVector.z, viewDotHalf);
+#else
+  return evalGGXVisibleNormalDistributionSamplePdf(roughness, outgoing.x, outgoing.y, outgoing.z,
+    halfVector.x, halfVector.y, halfVector.z, viewDotHalf);
+#endif
+}
+
+float nfscClearCoatMixturePdf(OpaqueSurfaceMaterialInteraction material, vec3 outgoing, vec3 halfVector)
+{
+  const float basePdf = opaqueReflectionPdf(material.anisotropicRoughness, outgoing, halfVector);
+  // Keep the coat PDF in FP32 throughout. The legacy VNDF helper caps the
+  // half-vector density to the FP16 range, which clips the peak at roughness 0.02.
+  const vec2 coatRoughness = nfscClearCoatRoughness();
+  float k = 1.0f;
+#if OPAQUE_MATERIAL_USE_BOUNDED_VNDF_SAMPLING
+  k = calcBoundedVNDFLowerBoundScalar(coatRoughness, outgoing);
+#endif
+  const float coatPdf = outgoing.z > 0.0f ? safePositiveDivide(
+    evalGGXNormalDistribution(coatRoughness, halfVector.x, halfVector.y, halfVector.z) *
+    evalGGXShadowing(coatRoughness, outgoing.x, outgoing.y, outgoing.z, k),
+    4.0f * outgoing.z, materialHighPrecisionEpsilon) : 0.0f;
+  return lerp(basePdf, coatPdf, nfscClearCoatSamplingProbability(material, outgoing.z));
+}
+
+vec3 evalNfscCoatedSpecular(OpaqueSurfaceMaterialInteraction material, vec3 incoming, vec3 outgoing,
+                           vec3 halfVector, vec3 baseFresnel)
+{
+  const float coatFresnel = nfscClearCoatFresnel(dot(outgoing, halfVector));
+  const vec3 base = baseFresnel * evalOpaqueGgx(material.anisotropicRoughness, incoming, outgoing, halfVector);
+  const float coat = coatFresnel * evalOpaqueGgx(nfscClearCoatRoughness(), incoming, outgoing, halfVector);
+  return (1.0f - coatFresnel) * base + vec3(coat);
+}
+
 // Fork: per draw wetness of the GTA IV mod (D3D_OPAQUE_MODIFIER_ROUGHNESS_SCALAR)
 #include "rtx/concept/surface_material/rtx_fork_wetness.slangh"
 
@@ -595,6 +697,12 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
   const bool d3dModRemVertexColorKeepAlpha = opaqueSurfaceMaterial.d3dModifierFlags & D3D_OPAQUE_MODIFIER_REM_VERTEX_COLOR_KEEP_ALPHA;
   const bool d3dModVehicleDecalDirt = opaqueSurfaceMaterial.d3dModifierFlags & D3D_OPAQUE_MODIFIER_VEHICLE_DECAL_DIRT;
   const bool d3dModGlobalUvModifier = opaqueSurfaceMaterial.d3dModifierFlags & D3D_OPAQUE_MODIFIER_GLOBAL_UV_MODIFIER;
+  const bool d3dModNfscPaint = opaqueSurfaceMaterial.d3dModifierFlags & D3D_OPAQUE_MODIFIER_NFSC_PAINT;
+  const bool d3dModNfscRimMetallicFlakes = opaqueSurfaceMaterial.d3dModifierFlags & D3D_OPAQUE_MODIFIER_NFSC_RIM_METALLIC_FLAKES;
+  const uint packedPaintParams = d3dModNfscPaint
+    ? uint(float16BitsToUint16(opaqueSurfaceMaterial.roughnessConstant)) |
+      (uint(float16BitsToUint16(opaqueSurfaceMaterial.metallicConstant)) << 16)
+    : 0u;
 
   if (d3dModRemVertexColorKeepAlpha)
   {
@@ -803,6 +911,26 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
     }
   }
 
+  if (d3dModNfscPaint)
+  {
+    const float vinylScale = float((packedPaintParams >> 16) & 0xFFu) / 255.0f;
+
+    const vec3 viewDirection = normalize(cameraGetWorldPosition(cb.camera) - surfaceInteraction.position);
+    const float nDotV = saturate(dot(surfaceInteraction.geometryNormal, viewDirection));
+    const float viewPower = max(float(opaqueSurfaceMaterial.emissiveColorConstant.x), 0.0f);
+    const float viewSpec = viewPower == 0.0f ? 1.0f : pow(nDotV, viewPower);
+    const float specDiff = min(viewSpec, tFactor.a);
+    const float scaledDiff = specDiff * opaqueSurfaceMaterial.emissiveColorConstant.y;
+    albedo = tFactor.rgb + scaledDiff * vec3(opaqueSurfaceMaterial.albedoOpacityConstant.rgb) * 2.0f;
+
+    if (albedoOpacityLoaded)
+    {
+      const vec3 textureColor = vec3(albedoOpacitySample.rgb);
+      const vec3 vinylColor = lerp(textureColor, textureColor * albedo, vinylScale);
+      albedo = lerp(albedo, vinylColor, albedoOpacitySample.a);
+    }
+  }
+
   if (opaqueSurfaceMaterial.flags & OPAQUE_SURFACE_MATERIAL_FLAG_IGNORE_ALPHA_CHANNEL)
   {
     opacity = 1.f;
@@ -913,10 +1041,17 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
   const float roughnessScale = cb.opaqueMaterialArgs.roughnessScale * (isHairCardMaterial ? cb.hairCardRoughnessScale : 1.0f);
   roughness = saturate(roughness * roughnessScale + cb.opaqueMaterialArgs.roughnessBias);
 
+  if (d3dModNfscPaint)
+  {
+    const float paintRoughness = float(packedPaintParams & 0xFFu) / 255.0f;
+    roughness = saturate(paintRoughness * roughnessScale + cb.opaqueMaterialArgs.roughnessBias);
+  }
+
   if (d3dModRoughnessScalar)
   {
     forkApplyD3DWetness(opaqueSurfaceMaterial, surface, surfaceInteraction, d3dWetnessDetail, roughness, normal, normalDetail, albedo);
   }
+
 
   // Load Metallic
 
@@ -928,6 +1063,12 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
   }
     
   metallic = saturate(metallic * cb.opaqueMaterialArgs.metallicScale + cb.opaqueMaterialArgs.metallicBias);
+
+  if (d3dModNfscPaint)
+  {
+    const float paintMetallic = float((packedPaintParams >> 8) & 0xFFu) / 255.0f;
+    metallic = saturate(paintMetallic * cb.opaqueMaterialArgs.metallicScale + cb.opaqueMaterialArgs.metallicBias);
+  }
 
   // Transform to desired Opaque Material Interaction values
 
@@ -944,6 +1085,26 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
   opaqueSurfaceMaterialInteraction.baseReflectivity = surface.isMatte ? vec3(0) :
     calcBaseReflectivity(albedo, metallic, opacity, opaqueSurfaceMaterialInteractionGetSpecularLevel(opaqueSurfaceMaterialInteraction));
   // NV-DXVK end
+
+  const bool nfscPaintMetallicFlakes = d3dModNfscPaint &&
+    (packedPaintParams & NFSC_PAINT_PACKED_METALLIC_FLAKES) != 0;
+  const bool useNfscMetallicFlakes = (nfscPaintMetallicFlakes || d3dModNfscRimMetallicFlakes) &&
+    metallic > 0.0f && opacity >= 1.0f && !surface.isMatte && cb.opaqueMaterialArgs.nfscFlakeStrength > 0.0f;
+  if (useNfscMetallicFlakes)
+  {
+    // Body paint samples vinyl coverage from the color texture alpha.
+    const float paintCoverage = d3dModNfscPaint && albedoOpacityLoaded
+      ? 1.0f - saturate(float(albedoOpacitySample.a)) : 1.0f;
+    const vec2 flakeOrientation = nfscMetallicFlakeOrientation(
+      surfaceInteraction.textureCoordinates,
+      surfaceInteraction.textureGradientX,
+      surfaceInteraction.textureGradientY) * paintCoverage;
+    const float flakeViewResponse = nfscMetallicFlakeViewResponse(
+      flakeOrientation, surfaceInteraction.geometryTangent,
+      surfaceInteraction.geometryBitangent, -minimalRayInteraction.viewDirection);
+    opaqueSurfaceMaterialInteraction.baseReflectivity = clamp(
+      opaqueSurfaceMaterialInteraction.baseReflectivity * flakeViewResponse, vec3(0.0f), vec3(1.0f));
+  }
    
   // Note: Roughness loaded from texture is a perceptual roughness value (for optimal encoding), so this works as intended.
   calcRoughness(roughness, opaqueSurfaceMaterial.anisotropy,
@@ -955,6 +1116,17 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
   opaqueSurfaceMaterialInteraction.subsurfaceMaterialInteraction =
     subSurfaceMaterialReadHelper(opaqueSurfaceMaterial.subsurfaceMaterialIndex, surfaceInteraction, opaqueSurfaceMaterial.samplerIndex);
   opaqueSurfaceMaterialInteraction.dlssControlMask = opaqueSurfaceMaterial.dlssControlMask;
+
+  const bool wantsNfscClearCoat = (d3dModNfscPaint && (packedPaintParams & NFSC_PAINT_PACKED_NO_CLEAR_COAT) == 0) ||
+    (opaqueSurfaceMaterial.d3dModifierFlags & D3D_OPAQUE_MODIFIER_NFSC_RIM_CLEAR_COAT) != 0;
+  if (wantsNfscClearCoat &&
+      cb.opaqueMaterialArgs.nfscClearCoatWeight > 0.0f && opacity >= 1.0f &&
+      !surface.isMatte && !(cb.eyeArgs.enableEyes && surface.isEye) &&
+      !isThinOpaqueSubsurfaceMaterial(opaqueSurfaceMaterialInteraction) &&
+      !isSubsurfaceDiffusionProfileMaterial(opaqueSurfaceMaterialInteraction))
+  {
+    opaqueSurfaceMaterialInteraction.flags |= OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_NFSC_CLEAR_COAT;
+  }
 
   // For an eye, load a secondary texture (iris) and blend on top of primary texture (whites)
   if (cb.eyeArgs.enableEyes && surface.isEye)
@@ -1072,11 +1244,13 @@ SurfaceMaterialInteractionLobeInformation opaqueSurfaceMaterialInteractionGetLob
   surfaceMaterialInteractionLobeInformation.diffuseReflectionPresent =
     any(greaterThanEqual(opaqueSurfaceMaterialInteraction.albedo, albedoThreshold));
   surfaceMaterialInteractionLobeInformation.specularReflectionPresent =
+    hasNfscClearCoat(opaqueSurfaceMaterialInteraction) ||
     any(greaterThanEqual(opaqueSurfaceMaterialInteraction.baseReflectivity, baseReflectivityThreshold));
   surfaceMaterialInteractionLobeInformation.diffuseTransmissionPresent = false;
   surfaceMaterialInteractionLobeInformation.specularTransmissionPresent = false;
 
   surfaceMaterialInteractionLobeInformation.specularReflectionDirac =
+    !hasNfscClearCoat(opaqueSurfaceMaterialInteraction) &&
     opaqueSurfaceMaterialInteraction.isotropicRoughness < roughnessThreshold;
   surfaceMaterialInteractionLobeInformation.specularTransmissionDirac = false;
 
@@ -1130,6 +1304,12 @@ bool opaqueSurfaceMaterialInteractionCalcLobeProbability(
   specularReflectionProbability = specularReflectionAlbedoApprox;
   opacityTransmissionProbability = opacityTransmissionAlbedoApprox;
   diffuseTransmissionProbability = isThinOpaqueSubsurface ? diffuseTransmissionAlbedoApprox : 0.0f;
+  if (hasNfscClearCoat(opaqueSurfaceMaterialInteraction))
+  {
+    const float coat = nfscClearCoatFresnel(normalDotOutputDirection);
+    diffuseReflectionProbability *= 1.0f - coat;
+    specularReflectionProbability = (1.0f - coat) * specularReflectionProbability + coat;
+  }
 
   // Todo: Pass raytraceArgs in in the future if accessing these constants poses a problem later.
   adjustProbabilityValue(
@@ -1304,7 +1484,9 @@ SurfaceMaterialInteractionSample opaqueSurfaceMaterialInteractionCalcDiffuseRefl
   SurfaceMaterialInteractionSample materialSample;
 
   materialSample.inputDirection = quaternionTransformVector(tangentToWorldSpaceQuaternion, inputDirection);
-  materialSample.throughput = throughput;
+  materialSample.throughput = hasNfscClearCoat(opaqueSurfaceMaterialInteraction)
+    ? throughput * (1.0f - nfscClearCoatFresnel(dot(outputDirection, microfacetNormal)))
+    : throughput;
   materialSample.solidAnglePdf = cosineHemisphereSolidAnglePdf;
 
   return materialSample;
@@ -1328,20 +1510,25 @@ SurfaceMaterialInteractionSample opaqueSurfaceMaterialInteractionCalcSpecularRef
     getNextSampleBlueNoise(randomState),
     getNextSampleBlueNoise(randomState));
 
+  const bool coated = hasNfscClearCoat(opaqueSurfaceMaterialInteraction);
+  vec2 sampleRoughness = opaqueSurfaceMaterialInteraction.anisotropicRoughness;
+  if (coated && getNextSampleBlueNoise(randomState) < nfscClearCoatSamplingProbability(opaqueSurfaceMaterialInteraction, outputDirection.z))
+    sampleRoughness = nfscClearCoatRoughness();
+
 #if OPAQUE_MATERIAL_USE_BOUNDED_VNDF_SAMPLING
   // Note: Manually calculate the lower bound scaling constant rather than using the usual calcGGXBoundedVisibleNormalDistributionSample
   // helper function. This is done so that this k value only needs to be computed once, as it is also needed for how the PDF is calculated
   // later (which is worked into the throughput math here).
-  const float k = calcBoundedVNDFLowerBoundScalar(opaqueSurfaceMaterialInteraction.anisotropicRoughness, outputDirection);
+  const float k = calcBoundedVNDFLowerBoundScalar(sampleRoughness, outputDirection);
 
   const vec3 microfacetNormal = calcGGXVisibleNormalDistributionSphericalCapSample(
-    opaqueSurfaceMaterialInteraction.anisotropicRoughness,
+    sampleRoughness,
     outputDirection,
     u,
     k);
 #else
   const vec3 microfacetNormal = calcGGXVisibleNormalDistributionSample(
-    opaqueSurfaceMaterialInteraction.anisotropicRoughness,
+    sampleRoughness,
     outputDirection,
     u);
 #endif
@@ -1412,6 +1599,18 @@ SurfaceMaterialInteractionSample opaqueSurfaceMaterialInteractionCalcSpecularRef
 #else
   const vec3 finalFresnel = fresnel;
 #endif
+
+  if (coated)
+  {
+    SurfaceMaterialInteractionSample materialSample;
+    const float pdf = nfscClearCoatMixturePdf(opaqueSurfaceMaterialInteraction, outputDirection, microfacetNormal);
+    const vec3 projectedWeight = evalNfscCoatedSpecular(opaqueSurfaceMaterialInteraction,
+      inputDirection, outputDirection, microfacetNormal, finalFresnel) * normalDotInputDirection;
+    materialSample.inputDirection = quaternionTransformVector(tangentToWorldSpaceQuaternion, inputDirection);
+    materialSample.throughput = saferPositiveDivide(projectedWeight, vec3(pdf), materialEpsilon, materialMaximum);
+    materialSample.solidAnglePdf = pdf;
+    return materialSample;
+  }
 
 #if OPAQUE_MATERIAL_USE_BOUNDED_VNDF_SAMPLING
   // Note: More typical G2/G1 calculation with special bounded G1 using the bounded scalar k calculated earlier for sampling
@@ -1858,6 +2057,9 @@ float opaqueSurfaceMaterialInteractionCalcSpecularReflectionSolidAnglePdf(
 
   // Calculate the solid angle PDF of the sample
 
+  if (hasNfscClearCoat(opaqueSurfaceMaterialInteraction))
+    return nfscClearCoatMixturePdf(opaqueSurfaceMaterialInteraction, outputDirection, microfacetNormal);
+
 #if OPAQUE_MATERIAL_USE_BOUNDED_VNDF_SAMPLING
   const float solidAnglePdf = evalGGXBoundedVisibleNormalDistributionSamplePdf(
     opaqueSurfaceMaterialInteraction.anisotropicRoughness,
@@ -1912,11 +2114,19 @@ float opaqueSurfaceMaterialInteractionCalcSolidAnglePdf(
 }
 
 
+SurfaceMaterialInteractionSplitWeight opaqueSurfaceMaterialInteractionCalcProjectedWeight(
+  OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction,
+  MinimalRayInteraction minimalRayInteraction,
+  vec3 inputDirection);
+
 SurfaceMaterialInteractionSplitWeight opaqueSurfaceMaterialInteractionCalcApproxProjectedWeight(
   OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction,
   MinimalRayInteraction minimalRayInteraction,
   vec3 inputDirection)
 {
+  if (hasNfscClearCoat(opaqueSurfaceMaterialInteraction))
+    return opaqueSurfaceMaterialInteractionCalcProjectedWeight(opaqueSurfaceMaterialInteraction, minimalRayInteraction, inputDirection);
+
   const vec3 microfacetNormal = normalize(inputDirection + minimalRayInteraction.viewDirection);
   const float /* n.h */ normalDotMicrofacetNormal = dot(opaqueSurfaceMaterialInteraction.shadingNormal, microfacetNormal);
   const float /* v.h */ outputDirectionDotMicrofacetNormal = dot(minimalRayInteraction.viewDirection, microfacetNormal);
@@ -2082,11 +2292,17 @@ SurfaceMaterialInteractionSplitWeight opaqueSurfaceMaterialInteractionCalcProjec
   // which makes it non-trivial to modify. This should be fine though as the thin film will only add a small bit of extra reflection in some cases (due to having two Fresnel layers),
   // or attenuate the reflected signal due to destructive interference, nothing major enough that'd majorly change the amount of transmitted light to make the diffuse contribution look very
   // wrong, though it may be slightly the wrong color in some instances, assuming that transmitted light interferes in the same way.
-  const vec3 diffuseReflectionWeight = evalHammonDiffuse(
+  vec3 diffuseReflectionWeight = evalHammonDiffuse(
     opaqueSurfaceMaterialInteraction.albedo, opaqueSurfaceMaterialInteraction.isotropicRoughness,
     inputDirectionDotOutputDirection, normalDotInputDirection,
     normalDotOutputDirection, normalDotMicrofacetNormal);
-  const vec3 specularReflectionWeight = min(finalFresnel * normalDistributionFunction * visibility, vec3(float16Max));
+  vec3 specularReflectionWeight = min(finalFresnel * normalDistributionFunction * visibility, vec3(float16Max));
+  if (hasNfscClearCoat(opaqueSurfaceMaterialInteraction))
+  {
+    diffuseReflectionWeight *= 1.0f - nfscClearCoatFresnel(outputDirectionDotMicrofacetNormal);
+    specularReflectionWeight = min(evalNfscCoatedSpecular(opaqueSurfaceMaterialInteraction,
+      tangentInputDirection, tangentOutputDirection, microfacetNormal, finalFresnel), vec3(float16Max));
+  }
 
   // Create a split weight
 
@@ -2114,6 +2330,11 @@ vec3 opaqueSurfaceMaterialGetAdjustedBaseReflectivity(
     opaqueSurfaceMaterialInteraction.baseReflectivity,
     vec3(float(1.0f) - opaqueSurfaceMaterialInteraction.opacity));
 
+  if (hasNfscClearCoat(opaqueSurfaceMaterialInteraction))
+  {
+    const float coat = nfscClearCoatFresnel(1.0f);
+    return lerp(adjustedBaseReflectivity, vec3(1.0f), coat);
+  }
   return adjustedBaseReflectivity;
 }
 

@@ -348,7 +348,9 @@ namespace dxvk {
     /**
      * \brief Writes custom configuration to file
      */
-    static void serializeCustomConfig(const Config& config, std::string filePath, std::string filterStr = std::string());
+    static bool serializeCustomConfig(const Config& config, std::string filePath,
+                                     std::string filterStr = std::string(),
+                                     bool preserveUnmanagedLines = false);
     // END
 
     // START

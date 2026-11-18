@@ -37,6 +37,7 @@ namespace dxvk {
     constants.wetPuddleOcclusion = std::clamp(puddleOcclusion(), 0.0f, 1.0f);
     constants.wetNoiseScale = std::max(noiseScale(), 0.1f);
     constants.wetMicroAmplitude = std::max(microAmplitude(), 0.001f);
+    constants.wetMaterialHeightWeight = std::clamp(materialHeightWeight(), 0.0f, 1.0f);
     constants.wetDepressionWeight = std::max(depressionWeight(), 0.0f);
     constants.wetSlopeLimit = std::max(slopeLimit(), 0.005f);
     constants.wetEdgeWidth = std::max(edgeWidth(), 0.0001f);
@@ -77,6 +78,7 @@ namespace dxvk {
     ImGui::TextUnformatted("Puddles");
     RemixGui::SliderFloat("Coverage", &puddleCoverageObject(), 0.0f, 1.0f, "%.2f");
     RemixGui::DragFloat("Ground Unevenness (m)", &microAmplitudeObject(), 0.001f, 0.001f, 1.0f, "%.3f");
+    RemixGui::SliderFloat("Material Height Influence", &materialHeightWeightObject(), 0.0f, 1.0f, "%.2f");
     RemixGui::DragFloat("Unevenness Cell Size (m)", &noiseScaleObject(), 0.01f, 0.1f, 100.0f, "%.2f");
     RemixGui::SliderFloat("Depression Weight", &depressionWeightObject(), 0.0f, 5.0f, "%.2f");
     RemixGui::SliderFloat("Slope Limit", &slopeLimitObject(), 0.005f, 1.0f, "%.3f");
@@ -95,6 +97,10 @@ namespace dxvk {
     RemixGui::SliderFloat("Ripple Speed", &rippleSpeedObject(), 0.0f, 10.0f, "%.2f");
     RemixGui::SliderFloat("Ripple Gusts", &rippleVariationObject(), 0.0f, 1.0f, "%.2f");
     RemixGui::SliderFloat("Raindrops on Wet Ground", &raindropGroundScaleObject(), 0.0f, 1.0f, "%.2f");
+
+    RemixGui::Separator();
+    ImGui::TextUnformatted("Frame Wetness");
+    RemixGui::SliderFloat("Global Wetness", &globalWetnessObject(), 0.0f, 1.0f, "%.2f");
   }
 
 namespace fork_hooks {

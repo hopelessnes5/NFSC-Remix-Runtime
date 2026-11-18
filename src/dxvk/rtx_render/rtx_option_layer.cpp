@@ -382,10 +382,15 @@ namespace dxvk {
     // Write all options from this layer into a Config (save all values, not just changed)
     Config layerConfig;
     RtxOptionManager::writeOptions(layerConfig, this, false);
-    setConfig(layerConfig);
     
-    // Save the config to disk using the layer's stored file path
-    Config::serializeCustomConfig(getConfig(), getFilePath(), "rtx.");
+    // The system rtx.conf is user-editable and may contain comments and entries
+    // unknown to this build. Preserve those lines only for the canonical Remix
+    // config layer. Other layers (including user.conf and exports) retain the
+    // regular filtered serializer behavior.
+    const bool preserveUnmanagedLines = (this == s_rtxConfLayer);
+    if (!Config::serializeCustomConfig(layerConfig, getFilePath(), "rtx.", preserveUnmanagedLines))
+      return false;
+    setConfig(layerConfig);
     
     // Clear the unsaved changes cache since we just saved
     m_hasUnsavedChanges = false;

@@ -1966,7 +1966,7 @@ namespace {
       dxvk::Vector2i{ pixelRegion->left, pixelRegion->top },
       dxvk::Vector2i{ pixelRegion->right, pixelRegion->bottom },
       // invoke user's callback on result
-      [callback, callbackUserData](std::vector<dxvk::ObjectPickingValue>&& objectPickingValues, std::optional<XXH64_hash_t>) {
+      [callback, callbackUserData](std::vector<dxvk::ObjectPickingValue>&& objectPickingValues, std::optional<XXH64_hash_t>, std::optional<XXH64_hash_t>) {
         callback(objectPickingValues.data(), uint32_t(objectPickingValues.size()), callbackUserData);
       }
     );
@@ -2801,7 +2801,24 @@ extern "C"
     }
 
     std::string value;
-    if (!getWeatherGameValue(tryAsDxvk(), key, value)
+    // Reserved, read-only runtime state exposed to compatibility plugins.
+    // This is deliberately queried live so UI changes to the RTX master
+    // switch are visible without restarting the game.
+    if (std::strcmp(key, "__runtime.raytracing_enabled") == 0) {
+      value = dxvk::RtxOptions::enableRaytracing() ? "true" : "false";
+    } else if (std::strcmp(key, "rtx.opaqueMaterial.nfscClearCoatWeight") == 0) {
+      value = std::to_string(dxvk::OpaqueMaterialOptions::nfscClearCoatWeight());
+    } else if (std::strcmp(key, "rtx.opaqueMaterial.nfscClearCoatRoughness") == 0) {
+      value = std::to_string(dxvk::OpaqueMaterialOptions::nfscClearCoatRoughness());
+    } else if (std::strcmp(key, "rtx.opaqueMaterial.nfscFlakeStrength") == 0) {
+      value = std::to_string(dxvk::OpaqueMaterialOptions::nfscFlakeStrength());
+    } else if (std::strcmp(key, "rtx.opaqueMaterial.nfscFlakeScale") == 0) {
+      value = std::to_string(dxvk::OpaqueMaterialOptions::nfscFlakeScale());
+    } else if (std::strcmp(key, "rtx.carbonTint.measurementDistance") == 0) {
+      value = std::to_string(dxvk::SceneManager::measurementDistance());
+    } else if (std::strcmp(key, "rtx.carbonTint.thicknessOverride") == 0) {
+      value = std::to_string(dxvk::SceneManager::thicknessOverride());
+    } else if (!getWeatherGameValue(tryAsDxvk(), key, value)
         && !dxvk::fork_game_state::GameStateStore::get().tryGet(std::string{ key }, value)) {
       *out_actual_size = 0;
       return REMIXAPI_ERROR_CODE_SUCCESS;

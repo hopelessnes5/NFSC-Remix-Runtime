@@ -342,17 +342,21 @@ namespace dxvk {
   PrecipitationSystem::Params PrecipitationSystem::resolveParams(const WeatherSnapshot* wx) {
     Params params;
 
+    // Keep this multiplier local to this native precipitation system: sceneScale also
+    // controls unrelated scene geometry, wetness and every other particle system.
+    const float worldScale = std::max(worldScaleFactor(), 1e-4f);
+
     const Vector3 up      = SceneManager::getSceneUp();
     const Vector3 forward = SceneManager::getSceneForward();
     const Vector3 right   = SceneManager::calculateSceneRight();
 
-    const float fallSpeedMs = std::max(wx ? wx->precipitationFallSpeed : fallSpeed(), 0.05f);
+    const float fallSpeedMs = std::max(wx ? wx->precipitationFallSpeed : fallSpeed(), 0.05f) * worldScale;
 
     const float windDirection = wx ? wx->cloudWindDirection : RtxAtmosphere::cloudWindDirection();
     const float windSpeedKmS = wx ? wx->cloudWindSpeed : RtxAtmosphere::cloudWindSpeed();
     const float windAngleRad = windDirection * dxvk::kDegreesToRadians;
     const float windSpeedMs  = std::max(windSpeedKmS, 0.0f) * 1000.0f;  // km/s -> m/s
-    const float horizontalMs = windSpeedMs * std::max(wx ? wx->precipitationWindResponse : windResponse(), 0.0f);
+    const float horizontalMs = windSpeedMs * std::max(wx ? wx->precipitationWindResponse : windResponse(), 0.0f) * worldScale;
 
     const Vector3 windDir = right * std::cos(windAngleRad) + forward * std::sin(windAngleRad);
 
@@ -360,14 +364,14 @@ namespace dxvk {
     const float speedMs = std::sqrt(velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z);
 
     params.fallDirection = dxvk::safeNormalize(velocity, up * -1.0f);
-    params.speedMetersPerSec = std::max(speedMs, 0.05f);
+    params.speedMetersPerSec = std::max(speedMs, 0.05f * worldScale);
 
     // Clamp downComponent so a near-horizontal fall can't push the spawn plane to infinity.
     const float downComponent = std::max(-dot(params.fallDirection, up), 0.15f);
-    const float heightM = std::max(spawnHeightMeters(), 0.5f);
+    const float heightM = std::max(spawnHeightMeters(), 0.5f) * worldScale;
     params.spawnDistanceWorld = (heightM / downComponent) * RtxOptions::getMeterToWorldUnitScale();
 
-    const float travelM = (heightM + std::max(fallMarginMeters(), 0.0f)) / downComponent;
+    const float travelM = (heightM + std::max(fallMarginMeters(), 0.0f) * worldScale) / downComponent;
     params.timeToLiveSec = std::max(travelM / params.speedMetersPerSec, 0.05f);
 
     return params;
@@ -379,8 +383,10 @@ namespace dxvk {
   RtxParticleSystemDesc PrecipitationSystem::buildDesc(const Params& params, const WeatherSnapshot* wx) {
     RtxParticleSystemDesc desc;
 
+    const float worldScale = std::max(worldScaleFactor(), 1e-4f);
+
     const float speedCmS = params.speedMetersPerSec * 100.0f;
-    const float verticalSpeedCmS = std::max(wx ? wx->precipitationFallSpeed : fallSpeed(), 0.05f) * 100.0f;
+    const float verticalSpeedCmS = std::max(wx ? wx->precipitationFallSpeed : fallSpeed(), 0.05f) * worldScale * 100.0f;
     const float dragCoeff = std::max(wx ? wx->precipitationDrag : drag(), 0.0f);
     const int   budget = std::max(maxParticles(), 1);
 
@@ -403,10 +409,11 @@ namespace dxvk {
     desc.dragCoefficient = dragCoeff;
     desc.gravityForce = -verticalSpeedCmS * dragCoeff;
 
-    const float turbulenceCmS2 = std::max(wx ? wx->precipitationTurbulence : turbulence(), 0.0f) * 100.0f;
+    const float turbulenceCmS2 = std::max(wx ? wx->precipitationTurbulence : turbulence(), 0.0f) * worldScale * 100.0f;
     desc.useTurbulence = turbulenceCmS2 > 0.0f ? 1 : 0;
     desc.turbulenceForce = turbulenceCmS2;
-    desc.turbulenceFrequency = std::max(turbulenceFrequency(), 1e-4f);
+    // The noise field is sampled in scene space; inverse scaling preserves its physical wavelength.
+    desc.turbulenceFrequency = std::max(turbulenceFrequency() / worldScale, 1e-4f);
 
     const float trail = std::max((wx ? wx->precipitationStreak : streak()) * std::max(streakScale(), 0.0f), 0.0f);
     desc.enableMotionTrail = trail > 0.01f ? 1 : 0;
@@ -432,7 +439,7 @@ namespace dxvk {
 
     desc.enableCollisionDetection = enableCollision() ? 1 : 0;
     desc.collisionMode = ParticleCollisionMode::Kill;
-    desc.collisionThickness = std::max(collisionThickness(), 0.0f);
+    desc.collisionThickness = std::max(collisionThickness(), 0.0f) * worldScale;
     desc.collisionRestitution = 0.0f;
 
     desc.hideEmitter = debugShowEmitter() ? 0 : 1;
@@ -446,13 +453,13 @@ namespace dxvk {
     desc.attractorRadius = 0.0f;
 
     // Turbulence integrates with only drag opposing it; 3x speed leaves room for gusting while bounding the worst case.
-    const float velocityClampCmS = std::max(speedCmS * 3.0f, 100.0f);
+    const float velocityClampCmS = std::max(speedCmS * 3.0f, 100.0f * worldScale);
     desc.maxVelocity = { vec3(velocityClampCmS, velocityClampCmS, velocityClampCmS) };
 
     // Two identical keyframes so size/color hold constant over each particle's life.
     // Spreading min/max rows apart gives stable per-drop randomness (GPU samples between them by randSeed).
-    const float width = std::max((wx ? wx->precipitationDropWidth : dropWidth()) * std::max(widthScale(), 0.0f), 0.01f);
-    const float length = std::max((wx ? wx->precipitationDropLength : dropLength()) * std::max(lengthScale(), 0.0f), 0.01f);
+    const float width = std::max((wx ? wx->precipitationDropWidth : dropWidth()) * std::max(widthScale(), 0.0f) * worldScale, 0.01f * worldScale);
+    const float length = std::max((wx ? wx->precipitationDropLength : dropLength()) * std::max(lengthScale(), 0.0f) * worldScale, 0.01f * worldScale);
     const float sizeVar = std::min(std::max(sizeVariance(), 0.0f), 0.9f);
     const vec2 sizeLo(width * (1.0f - sizeVar), length * (1.0f - sizeVar));
     const vec2 sizeHi(width * (1.0f + sizeVar), length * (1.0f + sizeVar));
@@ -534,7 +541,7 @@ namespace dxvk {
     Vector3 tangent, bitangent;
     buildTangentBasis(params.fallDirection, tangent, bitangent);
 
-    const float radiusWorld = std::max(spawnRadiusMeters(), 0.1f) * RtxOptions::getMeterToWorldUnitScale();
+    const float radiusWorld = std::max(spawnRadiusMeters(), 0.1f) * std::max(worldScaleFactor(), 1e-4f) * RtxOptions::getMeterToWorldUnitScale();
 
     return Matrix4 {
       Vector4(tangent.x   * radiusWorld, tangent.y   * radiusWorld, tangent.z   * radiusWorld, 0.0f),
@@ -673,6 +680,9 @@ namespace dxvk {
 
       RemixGui::DragFloat("Motion Streak x", &streakScaleObject(), 0.01f, 0.0f, 10.0f, "%.2f");
       RemixGui::SetTooltipToLastWidgetOnHover(streakScaleObject().getDescription());
+
+      RemixGui::DragFloat("Local World Scale", &worldScaleFactorObject(), 0.01f, 0.0001f, 10.0f, "%.4f");
+      RemixGui::SetTooltipToLastWidgetOnHover(worldScaleFactorObject().getDescription());
 
       RemixGui::DragFloat("Size Variance", &sizeVarianceObject(), 0.01f, 0.0f, 0.9f, "%.2f");
       RemixGui::SetTooltipToLastWidgetOnHover(sizeVarianceObject().getDescription());

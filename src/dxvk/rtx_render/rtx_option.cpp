@@ -834,6 +834,11 @@ namespace dxvk {
       // Options without UserSettings flag go to Remix Config layer
       return RtxOptionLayer::getRtxConfLayer();
     }
+
+    // Explicit user choice to save every GUI-edited option in rtx.conf.
+    if (editTarget == RtxOptionEditTarget::RtxConf) {
+      return RtxOptionLayer::getRtxConfLayer();
+    }
     
     // Code-driven changes (Derived edit target)
     if (editTarget == RtxOptionEditTarget::Derived) {
