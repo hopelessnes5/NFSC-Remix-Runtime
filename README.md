@@ -1,234 +1,69 @@
-# Remix Plus
+# NFSC Remix Runtime
 
-[![Build Status](https://github.com/RemixProjGroup/dxvk-remix/actions/workflows/build.yml/badge.svg)](https://github.com/RemixProjGroup/dxvk-remix/actions/workflows/build.yml)
+An experimental NVIDIA RTX Remix runtime for **Need for Speed: Carbon**. The project adapts Carbon-specific compatibility work to a newer Remix runtime while building on the rendering and weather features developed for GTA IV Remix.
 
-**Remix Plus** is a community-maintained fork of NVIDIA's
-[`dxvk-remix`](https://github.com/NVIDIAGameWorks/dxvk-remix) — created
-and led by [Kim2091](https://github.com/Kim2091) — that extends the
-Remix SDK API for modern-game plugin integrations. It
-brings the SDK extensions developed in the gmod-rtx community fork —
-batched mesh and light creation, plugin-injected game state, UI state
-plumbing, VRAM control, additional tonemap operators, the Numos
-sky system, and more — onto a clean, NVIDIA-rebase-friendly
-base, so plugin authors and game integrations can build on a
-maintained codebase that's API-compatible with the broader Remix
-ecosystem.
+The goal is to make Carbon's original game geometry and materials usable by Remix's path tracer, while retaining support for existing Remix replacement assets. The runtime works together with a separate Carbon compatibility plugin that reads game data and supplies the render states needed by these features.
 
-Like upstream `dxvk-remix`, Remix Plus is a fork of
-[DXVK](https://github.com/doitsujin/dxvk) that overhauls the D3D9
-fixed-function pipeline for path-traced remastering. The `bridge`
-subfolder enables 32-bit games to communicate with the 64-bit
-runtime.
+## Project background
 
-> Bugs encountered with Remix Plus belong in this repo's issue
-> tracker, not in upstream DXVK or NVIDIA `dxvk-remix`.
+The original point of reference for Carbon compatibility is XOXOR's [`game/nfsc_3` branch](https://github.com/xoxor4d/dxvk-remix/tree/game/nfsc_3). This project adapts that work to a newer runtime using ideas and implementations from XOXOR's [`game/gta4` branch](https://github.com/xoxor4d/dxvk-remix/tree/game/gta4), alongside components from [Remix Plus](https://github.com/RemixProjGroup/dxvk-remix) and NVIDIA's [RTX Remix Runtime](https://github.com/NVIDIAGameWorks/dxvk-remix).
 
-## What's new vs upstream `dxvk-remix`
+This repository contains a snapshot of the adapted runtime sources. References to upstream branches describe the project's technical background; they do not imply that this repository preserves their complete Git history.
 
-### Remix SDK API extensions
+## Current work
 
-- **Batched mesh creation** — `CreateMeshBatched` for high-throughput
-  geometry submission paths.
-- **Batched light creation + deferred updates** — `CreateLightBatched`,
-  `UpdateLightDefinition` for per-frame light churn.
-- **UI state query/set** — `GetUIState` / `SetUIState` so plugins can
-  observe and drive Remix's developer UI from outside the runtime.
-- **Texture-hash category mutation** — `AddTextureHash`,
-  `RemoveTextureHash`, `dxvk_GetTextureHash` for plugin-driven texture
-  classification at runtime.
-- **D3D11 shared-texture handles** — `dxvk_GetSharedD3D11TextureHandle`
-  for interop with D3D11-side rendering paths.
-- **VRAM control** — `RequestTextureVramFree`, `RequestVramCompaction`,
-  `GetVramStats` give plugins a driver-view handle on memory pressure.
-- **Plugin-injected game state** — `SetGameValue` writes named values
-  into a fork-owned store; `GameValueReadBool` and `GameValueReadNumber`
-  graph (Sense) components read them back inside replacement logic.
-- **`externalMesh` field** on `RasterGeometry` for capture/replacement
-  parity when geometry comes in via the Remix API path.
-- **`InstanceCategoryBit` ABI** synced to the gmod/plugin layout so
-  category bits round-trip correctly across the API boundary.
+- **Carbon compatibility:** runtime support for Carbon-specific per-draw material data supplied by the compatibility plugin.
+- **Vehicle materials:** experimental paint, clear coat, wheel finishes and window tint. Metallic flakes are still an approximation and need further work.
+- **Weather and wetness:** GTA IV-derived rain and surface wetness features adapted for Carbon. Puddles, rain exposure and their response to game conditions remain under development.
+- **Material inspection:** the Remix developer UI can display and copy the geometry hash of a selected object, in addition to the texture hash. The displayed topological hash may differ from a mesh replacement hash.
+- **Debug controls:** runtime controls for Carbon paint and tint are available in the Remix developer menu. Additional game-data inspection and overrides are provided by the separate compatibility plugin.
 
-### Tonemapping & auto-exposure
+This is a **work in progress**, not a finished mod or a drop-in replacement for every Carbon Remix setup. Some features are experimental or require further in-game validation. Existing game configurations and replacement assets may need their own settings.
 
-- **Eight tonemap operators** in the UI dropdown: Hill ACES, Narkowicz
-  ACES, Hable Filmic, AgX Minimal, Lottes 2016, PsychoV17_Beta, Gran
-  Turismo 7 (SDR), and Neutwo. Each operator has its own parameter
-  panel — controls are visible at a glance instead of buried.
-- **AgX Minimal** (Benjamin Wrensch / MIT) replaces the older
-  multi-knob AgX surface. Look presets: None / Golden / Punchy.
-- **PsychoV17_Beta** — Slang port of renodx Psycho Test 17 (Carlos
-  Lopez Jr. / MIT). Stockman-Sharpe LMS + Naka-Rushton cone response
-  + gamut compression.
-- **Gran Turismo 7 reference** — Slang port of Polyphony Digital's
-  SIGGRAPH 2025 GT7 tone-mapping reference (MIT). SDR mode, ICtCp UCS.
-- **Hable presets** (Hejl, Uncharted 2) with the original parameters.
-- **Perceptual auto-exposure** — Stockman-Sharpe Yf histogram +
-  geometric-mean adaptation + first-site cone-contrast law. Asymmetric
-  in log-exposure space: cone-bleach is fast (~0.10–0.20 s),
-  rod-recovery is slow (~0.50–1.50 s). Two tau sliders replace the old
-  Adaptation Speed / EV-Min / EV-Max / Average Mode controls.
+## Repository layout
 
-The legacy Tonemapping Mode (Global / Local / Direct) combo, the local
-tonemapper, the dynamic tone curve / Tuning Mode sliders, the User
-Brightness slider, and the exposure-compensation curve are removed —
-the apply pass always runs in operator-only mode.
+| Path | Contents |
+| --- | --- |
+| `src/d3d9/` | D3D9 interception and game draw-call handling |
+| `src/dxvk/` | Vulkan rendering, RTX Remix and fork-specific runtime systems |
+| `src/dxvk/shaders/rtx/` | RTX shaders and shared shader definitions |
+| `bridge/` | Bridge between the 32-bit game and the 64-bit runtime |
+| `include/`, `submodules/` | Headers and third-party project sources |
+| `docs/`, `documentation/` | Development and upstream documentation |
+| `tests/` | Runtime and rendering tests |
 
-### Numos sky system
+The compatibility plugin, game files and Remix replacement assets are separate from this repository.
 
-- **Numos atmosphere (Hillaire scattering)** — physically-based atmospheric scattering
-  ported from the gmod-rtx community fork. Daylight, sunset, and
-  twilight all behave correctly without manual fog tuning.
-- **Volumetric clouds** — procedural FBM cloud layer with
-  weather-driven coverage and Nubis-style spatial variation. Anvil,
-  shear, and vertical-profile shaping are artist-tunable. Renders
-  through a sky-dome curvature with sample-seam jitter to hide
-  stepping artifacts. Sun and any number of moons cast shadows
-  through the volume; twilight and night cloud lighting are
-  physically correct rather than tuned-by-eye. Shadow-tap cost is
-  heavily reduced via multi-octave density approximation,
-  cadence-decoupled shadow caching, combined-moon marching, and
-  density-gated skipping.
-- **Night sky** — stars, milky way, shooting stars, and airglow,
-  with sidereal rotation so the celestial sphere actually moves.
-  Multi-moon support: independent elevation / rotation / phase per
-  moon, unified moon-disk eval with surface-style presets (Rocky,
-  Volcanic), soft radial glow/halo, and physically-scaled lunar
-  illumination on the cloud volume.
+## Building
 
-### Hardware skinning
+The runtime is built on Windows using **Meson** and the Visual Studio C++ toolchain. A working setup requires Visual Studio with C++ tools, the Windows SDK, a Vulkan SDK, Python, Meson, Ninja and the runtime's external dependencies, including the NVIDIA and third-party SDKs referenced by the Packman manifests.
 
-- **HW skinning** with capture and replacement parity, so skinned
-  meshes injected via the Remix API path participate in capture and
-  asset replacement the same as fixed-pipeline geometry.
-
-### Capture and overlay quality-of-life
-
-- **Overwrite-existing-capture** checkbox in the capture dialog.
-- **Null-image / null-map / dimension guards** on capture export
-  paths — eliminates a class of crashes when capturing edge-case
-  resources.
-- **Keyboard and mouse events** forwarded to ImGui on the legacy
-  `WndProc` fallback path, so plugin-API-driven overlays receive
-  input even when a game menu captures raw input.
-- **Quieter logs** — spammy swapchain-recreate throws and repeated
-  mesh-registration warnings silenced.
-
-### Engineering
-
-- **Fork-touchpoint pattern** — fork logic is extracted into
-  dedicated `rtx_fork_*.cpp` modules, with one-line dispatches in
-  upstream files. Reduces NVIDIA-rebase pain by ~54% (measured) and
-  makes the fork's surface area auditable. See
-  [`docs/fork-touchpoints.md`](docs/fork-touchpoints.md) for the
-  authoritative inventory.
-- **PR template fridge-list reminder** keeps the discipline honest.
-
-## Contributing
-
-Contributions are welcome. Whether you write Remix plugins, ship a
-game integration, or want to make this fork better — start with the
-contribution guide:
-
-**[`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)** covers setup,
-build, fork-touchpoint discipline, code style, and PR submission.
-
-The short version:
-
-1. Fork [`RemixProjGroup/dxvk-remix`](https://github.com/RemixProjGroup/dxvk-remix).
-2. Branch on your fork — any name is fine.
-3. Keep PRs small and focused.
-4. Build clean (release flavor, exit code 0, zero errors).
-5. Open a PR against canonical's `main` branch.
-6. Add yourself to `src/dxvk/imgui/dxvk_imgui_about.cpp` under
-   "Github Contributors".
-
-If you touch any upstream file, update
-[`docs/fork-touchpoints.md`](docs/fork-touchpoints.md) in the same
-commit — that's the one rigid rule.
-
-Questions? File an issue or ask on the
-[RTX Remix Discord](https://discord.gg/c7J6gUhXMk).
-
-## Quick build
-
-Detailed requirements and walkthrough live in
-[`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md). The compressed
-version, assuming you have Visual Studio 2019 (with the v142
-toolchain), the Windows SDK, Meson 1.8.2+, the Vulkan SDK
-1.4.313.2+, and Python 3.9+:
+For a configured development environment, generate and build the supported configurations from a PowerShell prompt in the repository root:
 
 ```powershell
-git clone --recursive https://github.com/<your-fork>/dxvk-remix.git
-cd dxvk-remix
-.\scripts\build.ps1
+.\build_dxvk_all_ninja.ps1
 ```
 
-`scripts/build.ps1` is the fork-side runtime build entry point — it
-discovers Visual Studio via vswhere, runs `meson setup`/`compile`/
-`install`, and verifies artifacts. It defaults to the `release`
-flavor; pass `-Flavor debug` or `-Flavor debugoptimized` for the
-instrumented flavors, `-Clean` for a fresh build dir, or
-`-EnableTracy` for the Tracy profiler.
+For an already configured build directory, build the runtime target with:
 
-Output `d3d9.dll` lands in `_Comp64Release/src/d3d9/` and is
-installed to `_output/`. Configure game targets via
-`gametargets.conf` (copy `gametargets.example.conf`) and the build
-will deploy automatically.
+```powershell
+meson compile -C _Comp64Release d3d9
+```
 
-To build the 32-bit-to-64-bit bridge separately, use the fork-side
-bridge wrapper `.\bridge\scripts\build.ps1` (builds the x64 server
-and x86 client + launcher into `bridge/_output/`).
+See [`build_dxvk.ps1`](build_dxvk.ps1), [`build_common.ps1`](build_common.ps1), [`packman-external.xml`](packman-external.xml) and [`packman-dlnr.xml`](packman-dlnr.xml) for configuration and dependency details. The source snapshot contains third-party files copied from the development environment; it has not yet been verified as a clean, reproducible checkout on another machine. Generated build directories and some SDK links are not included in the snapshot.
 
-## Remix API
+## Testing and installation
 
-If you're integrating Remix into a game with available source, you
-can either use the D3D9 surface directly (Remix's `d3d9.dll`
-implements D3D9) or program against the Remix C API to push game
-data into the renderer. Start with
-[`documentation/RemixSDK.md`](documentation/RemixSDK.md) for setup and the mental
-model, then see [`docs/RemixApi.md`](docs/RemixApi.md) for the full
-API reference. The C header is
-[`public/include/remix/remix_c.h`](public/include/remix/remix_c.h),
-with a type-safe C++ wrapper at
-[`public/include/remix/remix.h`](public/include/remix/remix.h).
+The project requires a compatible copy of Need for Speed: Carbon, a matching Remix bridge and runtime build, and the separately built Carbon compatibility plugin. Remix assets and configuration are managed separately.
 
-## Project documentation
-
-- [Anti-Culling System](documentation/AntiCullingSystem.md)
-- [Cloud System](docs/CloudSystem.md)
-- [Contributing Guide](docs/CONTRIBUTING.md)
-- [Contributing Style Guide](documentation/CONTRIBUTING-style-guide.md)
-- [Foliage System](documentation/FoliageSystem.md)
-- [Fork Touchpoints](docs/fork-touchpoints.md)
-- [GPU Print](documentation/GpuPrint.md)
-- [Opacity Micromap](documentation/OpacityMicromap.md)
-- [Remix API (hub reference)](docs/RemixApi.md)
-- [Remix API Changelog](documentation/RemixApiChangelog.md)
-- [Remix API Surface (auto-generated)](RemixApiSurface.md)
-- [Remix Config](documentation/RemixConfig.md)
-- [Remix Logic](documentation/RemixLogic.md)
-- [Remix SDK Setup](documentation/RemixSDK.md)
-- [Remix Sky API](docs/RemixSkyAPI.md)
-- [Rtx Options](RtxOptions.md)
-- [Terrain System](documentation/TerrainSystem.md)
-- [Unit Test](documentation/UnitTest.md)
-
-## Team
-
-- [Kim2091](https://github.com/Kim2091) — project lead and lead maintainer
-- [CR](https://github.com/sambow23) — maintainer
-- [TheGreatHMMMM](https://github.com/TheGreatHMMMM) — contributor
-- [Gokuwashere](https://github.com/BrunchyChineapple) — contributor
+Before replacing an existing runtime, back up the game's current bridge/runtime files and configuration. Verify changes in game with the intended plugin and mod setup; a successful compile alone does not establish visual correctness or compatibility.
 
 ## Credits
 
-Remix Plus stands on the work of:
+- **XOXOR** — original Carbon Remix compatibility work and GTA IV Remix development.
+- **NVIDIA and RTX Remix contributors** — RTX Remix runtime, SDK and tools.
+- **Remix Plus contributors**, including Kim2091 — runtime extensions and rendering features used by this project.
+- **DXVK contributors** — the D3D9-to-Vulkan foundation.
+- Authors of the included libraries, tools and third-party components.
 
-- [DXVK](https://github.com/doitsujin/dxvk) — D3D9 → Vulkan
-  translation layer.
-- [NVIDIA `dxvk-remix`](https://github.com/NVIDIAGameWorks/dxvk-remix) —
-  path-traced remastering fork of DXVK.
-- The **gmod-rtx community fork** — origin of most of the SDK
-  extensions Remix Plus carries.
-
-Thanks to all the contributors whose work makes this possible.
+See [`LICENSE`](LICENSE), [`LICENSE-MIT`](LICENSE-MIT) and [`ThirdPartyLicenses.txt`](ThirdPartyLicenses.txt) for the applicable license and attribution information.
